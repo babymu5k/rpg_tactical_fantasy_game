@@ -11,9 +11,6 @@ The game is a Tactical Fantasy RPG, turn-based and in 2D.
 
 ## How to help development
 
-You can submit any request you want, or report any bug you encounter, by sending an e-mail to
-grimmys.programming@gmail.com or by opening an issue.
-
 Alternatively, you can join the newly created community discord: https://discord.gg/CwFdXNs9Wt.
 
 Feel free to come up with ideas whether it is about coding practices or game mechanics, this project is far from being
