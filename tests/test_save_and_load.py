@@ -3,9 +3,9 @@ import unittest
 
 from src.game_entities.foe import Keyword
 from src.services.load_from_xml_manager import (
-    load_ally,
+    load_ally_from_save,
     load_alteration,
-    load_foe,
+    load_foe_from_save,
     parse_item_file,
     load_player,
     load_item,
@@ -57,7 +57,7 @@ class TestSaveAndLoad(unittest.TestCase):
             equipments=[parse_item_file("helmet")],
         )
         character_saved = character.save("ally")
-        loaded_character = load_ally(character_saved, True, 0, 0)
+        loaded_character = load_ally_from_save(character_saved, 0, 0)
         self.assertEqual(character.name, loaded_character.name)
         self.assertEqual(character.position, loaded_character.position)
         self.assertEqual(character.hit_points, loaded_character.hit_points)
@@ -83,7 +83,7 @@ class TestSaveAndLoad(unittest.TestCase):
         character.set_alteration(alteration)
         character.set_alteration(other_alteration)
         character_saved = character.save("ally")
-        loaded_character = load_ally(character_saved, True, 0, 0)
+        loaded_character = load_ally_from_save(character_saved, 0, 0)
 
         self.assertEqual(character.alterations, loaded_character.alterations)
 
@@ -98,7 +98,7 @@ class TestSaveAndLoad(unittest.TestCase):
             ],
         )
         foe_saved = foe.save("foe")
-        loaded_foe = load_foe(foe_saved, True, 0, 0)
+        loaded_foe = load_foe_from_save(foe_saved, 0, 0)
         self.assertEqual(foe.name, loaded_foe.name)
         self.assertEqual(foe.position, loaded_foe.position)
         self.assertEqual(foe.hit_points, loaded_foe.hit_points)

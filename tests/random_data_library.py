@@ -13,6 +13,7 @@ from src.game_entities.foe import Foe, Keyword
 from src.game_entities.gold import Gold
 from src.game_entities.item import Item
 from src.game_entities.movable import Movable
+from src.game_entities.objective import Objective
 from src.game_entities.player import Player
 from src.game_entities.shield import Shield
 from src.game_entities.weapon import Weapon
@@ -27,6 +28,10 @@ EFFECTS = (
     "resistance_up",
     "hp_up",
 )
+
+
+def random_boolean():
+    return random.choice([True, False])
 
 
 def random_string(min_len=4, max_len=10):
@@ -312,7 +317,9 @@ def random_destroyable_entity(
     :param name:
     :return:
     """
-    attributes = random_destroyable_attributes(min_hp, max_hp, max_defense, max_res, name)
+    attributes = random_destroyable_attributes(
+        min_hp, max_hp, max_defense, max_res, name
+    )
     return Destroyable(
         attributes["name"],
         attributes["pos"],
@@ -333,7 +340,9 @@ def random_movable_attributes(min_hp, max_hp, max_defense, max_res, name):
     :param name:
     :return:
     """
-    attributes = random_destroyable_attributes(min_hp, max_hp, max_defense, max_res, name)
+    attributes = random_destroyable_attributes(
+        min_hp, max_hp, max_defense, max_res, name
+    )
     attributes["max_moves"] = random.randint(0, 12)
     attributes["strength"] = random.randint(0, 20)
     attributes["attack_kind"] = random.choice(["PHYSICAL", "SPIRITUAL"])
@@ -398,7 +407,9 @@ def random_character_attributes(
     attributes["classes"] = (
         classes if classes else [random.choice(list(Character.classes_data.keys()))]
     )
-    attributes["race"] = race if race else random.choice(list(Character.races_data.keys()))
+    attributes["race"] = (
+        race if race else random.choice(list(Character.races_data.keys()))
+    )
     attributes["equipments"] = equipments if equipments else []
     attributes["lvl"] = lvl if lvl else random.randint(1, 10)
     attributes["skills"] = []
@@ -481,15 +492,22 @@ def random_foe_attributes(
     :return:
     """
     attributes = random_movable_attributes(min_hp, max_hp, max_defense, max_res, name)
-    attributes["reach"] = reach if reach else random.choice([[1], [2], [1, 2], [3], [1, 2, 3]])
+    attributes["reach"] = (
+        reach if reach else random.choice([[1], [2], [1, 2], [3], [1, 2, 3]])
+    )
     attributes["xp_gain"] = random.randint(10, 300)
     attributes["lvl"] = random.randint(1, 10)
     attributes["loot"] = (
         loot
         if loot
-        else [(random_item_or_gold(), random.random()) for _ in range(random.randint(1, 5))]
+        else [
+            (random_item_or_gold(), random.random())
+            for _ in range(random.randint(1, 5))
+        ]
     )
-    attributes["keywords"] = [random.choice(list(Keyword))] if keywords is None else keywords
+    attributes["keywords"] = (
+        [random.choice(list(Keyword))] if keywords is None else keywords
+    )
     attributes["alterations"] = []
     return attributes
 
@@ -625,14 +643,15 @@ def random_entities(entity_kind, min_number=1, max_number=10):
         random_entity_callback = random_foe_entity
     else:
         random_entity_callback = random_player_entity
-    return [random_entity_callback() for _ in range(random.randint(min_number, max_number))]
+    return [
+        random_entity_callback() for _ in range(random.randint(min_number, max_number))
+    ]
 
 
 def random_building(
     is_interactive=True,
-    min_talks=0,
+    min_talks=1,
     max_talks=10,
-    talks=True,
     min_gold=0,
     gold=True,
     item=True,
@@ -651,14 +670,14 @@ def random_building(
     name = random_string()
     position = random_position()
     sprite = "imgs/houses/blue_house.png"
-    interaction = {}
+    interaction = None
     if is_interactive:
         talks_el = [
             random_string(min_len=10, max_len=100)
             for _ in range(random.randint(min_talks, max_talks))
         ]
         interaction = {
-            "talks": talks_el if talks else [],
+            "talks": talks_el,
             "gold": random.randint(min_gold, 1000) if gold else 0,
             "item": random_item() if item else None,
         }
@@ -711,3 +730,11 @@ def random_alteration(name=None, effects=None, min_duration=1, max_duration=5):
     )
 
     return Alteration(name, abbr, power, duration, desc, effects)
+
+
+def random_objective(name=None, position=None):
+    name = name if name else random_string()
+    position = position if position else random_position()
+    sprite = "imgs/dungeon_crawl/dungeon/gateways/abyssal_stair.png"
+
+    return Objective(name, position, sprite, random_boolean())

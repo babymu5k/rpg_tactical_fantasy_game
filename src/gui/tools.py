@@ -1,5 +1,5 @@
 """
-Defines utilitary functions for stuff related to GUI.
+Defines utility functions for stuff related to GUI.
 """
 
 from __future__ import annotations
@@ -16,21 +16,22 @@ def show_fps(
     surface: pygame.Surface, inner_clock: pygame.time.Clock, font: pygame.font.Font
 ) -> None:
     """
-    Display at the top left corner of the screen the current frame rate.
+    Display in the top left corner of the screen the current frame rate.
 
     Keyword arguments:
     screen -- the surface on which the framerate should be drawn
     inner_clock -- the pygame clock running and containing the current frame rate
     font -- the font used to display the frame rate
     """
-    fps_text = font.render(
-        f"FPS: {inner_clock.get_fps():.0f}", True, LIGHT_YELLOW
-    )
+    fps_text = font.render(f"FPS: {inner_clock.get_fps():.0f}", True, LIGHT_YELLOW)
     surface.blit(fps_text, (2, 2))
 
 
 def blit_alpha(
-    target: pygame.Surface, source: pygame.Surface, location: tuple[int, int], opacity: int
+    target: pygame.Surface,
+    source: pygame.Surface,
+    location: tuple[int, int],
+    opacity: int,
 ):
     """
     Blit a surface on one other but with a specific opacity.
@@ -62,7 +63,9 @@ def distance(position: Position, other_position: Position) -> int:
     )
 
 
-def determine_gauge_color(current_value: int, max_value: int, default_color: pygame.Color) -> pygame.Color:
+def determine_gauge_color(
+    current_value: int, max_value: int, default_color: pygame.Color
+) -> pygame.Color:
     """
     Return the color that should be used to display the gauge of a measure
     (for example the hit points of an entity).

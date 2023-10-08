@@ -7,23 +7,19 @@ from __future__ import annotations
 from typing import Sequence, Callable, Optional
 
 import pygame
-from lxml import etree
 from lxml.etree import XMLSyntaxError
-from pygamepopup.components import InfoBox, TextElement
+from pygamepopup.components import TextElement, InfoBox
 from pygamepopup.menu_manager import MenuManager
 
-from src.constants import (
-    SCREEN_SIZE,
-    WIN_WIDTH,
-    WIN_HEIGHT
-)
+from src.constants import SCREEN_SIZE, WIN_WIDTH, WIN_HEIGHT
 from src.game_entities.movable import Movable
 from src.game_entities.player import Player
 from src.gui.fonts import fonts
 from src.gui.position import Position
 from src.scenes.level_scene import LevelScene, LevelStatus
-from src.scenes.scene import Scene
+from src.scenes.scene import Scene, QuitActionKind
 from src.services import menu_creator_manager
+from src.services.language import *
 
 
 class StartScene(Scene):
@@ -60,17 +56,19 @@ class StartScene(Scene):
         )
 
         self.menu_manager = MenuManager(screen)
-        self.menu_manager.open_menu(menu_creator_manager.create_start_menu(
-            {
-                "new_game": self.new_game,
-                "load_menu": self.load_menu,
-                "options_menu": self.options_menu,
-                "exit_game": self.exit_game,
-            }
-        ))
+        self.menu_manager.open_menu(
+            menu_creator_manager.create_start_menu(
+                {
+                    "new_game": self.new_game,
+                    "load_menu": self.load_menu,
+                    "options_menu": self.options_menu,
+                    "exit_game": self.exit_game,
+                }
+            )
+        )
 
         self.level: Optional[LevelScene] = None
-        self.exit: bool = False
+        self.exit: QuitActionKind = QuitActionKind.CONTINUE
 
         StartScene.load_options()
 
@@ -114,8 +112,7 @@ class StartScene(Scene):
 
     def display(self) -> None:
         """
-        Display the level on screen if there is one, else display the background
-        of the start screen, all the menus in the background and lastly the active menu.
+        Display the background of the start screen, and all the menus.
         """
         self.screen.blit(self.background, (0, 0))
         self.menu_manager.display()
@@ -142,7 +139,11 @@ class StartScene(Scene):
         return self.level is not None
 
     @staticmethod
-    def load_new_level(level: int, level_screen: pygame.Surface, team: Optional[Sequence[Player]] = None) -> LevelScene:
+    def load_new_level(
+        level: int,
+        level_screen: pygame.Surface,
+        team: Optional[Sequence[Player]] = None,
+    ) -> LevelScene:
         """
         Load a specific level.
 
@@ -154,7 +155,9 @@ class StartScene(Scene):
         """
         if team is None:
             team = []
-        return LevelScene(level_screen, "maps/level_" + str(level) + "/", level, players=team)
+        return LevelScene(
+            level_screen, "maps/level_" + str(level) + "/", level, players=team
+        )
 
     def new_game(self) -> None:
         """
@@ -178,53 +181,62 @@ class StartScene(Scene):
                 game_status = tree_root.find("level/phase").text.strip()
                 turn_nb = int(tree_root.find("level/turn").text.strip())
 
-                self.level = LevelScene(StartScene.generate_level_window(), level_path, level_id,
-                                        LevelStatus[game_status],
-                                        turn_nb,
-                                        tree_root.find("level/entities"))
+                self.level = LevelScene(
+                    StartScene.generate_level_window(),
+                    level_path,
+                    level_id,
+                    LevelStatus[game_status],
+                    turn_nb,
+                    tree_root.find("level/entities"),
+                )
 
         except XMLSyntaxError:
             # File does not contain expected values and may be corrupt
             name: str = "Load Game"
             width: int = self.screen.get_width() // 2
-            self.menu_manager.open_menu(InfoBox(
-                name,
-                [
+            self.menu_manager.open_menu(
+                InfoBox(
+                    name,
                     [
-                        TextElement(
-                            "Unable to load saved game. Save file appears corrupt.",
-                            font=fonts["MENU_SUB_TITLE_FONT"]
-                        )
-                    ]
-                ],
-                width=width,
-                background_path="imgs/interface/PopUpMenu.png",
-            ))
+                        [
+                            TextElement(
+                                "Unable to load saved game. Save file appears corrupt.",
+                                font=fonts["MENU_SUB_TITLE_FONT"],
+                            )
+                        ]
+                    ],
+                    width=width,
+                    background_path="imgs/interface/PopUpMenu.png",
+                )
+            )
 
         except FileNotFoundError:
             # No saved game
             name: str = "Load Game"
             width: int = self.screen.get_width() // 2
-            self.menu_manager.open_menu(InfoBox(
-                name,
-                [
+            self.menu_manager.open_menu(
+                InfoBox(
+                    name,
                     [
-                        TextElement(
-                            "No saved game.",
-                            font=fonts["MENU_SUB_TITLE_FONT"]
-                        )
-                    ]
-                ],
-                width=width,
-                background_path="imgs/interface/PopUpMenu.png",
-            ))
+                        [
+                            TextElement(
+                                "No saved game.", font=fonts["MENU_SUB_TITLE_FONT"]
+                            )
+                        ]
+                    ],
+                    width=width,
+                    background_path="imgs/interface/PopUpMenu.png",
+                )
+            )
 
     def load_menu(self) -> None:
         """
         Move current active menu to the background and set a freshly created load game menu
         as the new active menu.
         """
-        self.menu_manager.open_menu(menu_creator_manager.create_load_menu(self.load_game))
+        self.menu_manager.open_menu(
+            menu_creator_manager.create_load_menu(self.load_game)
+        )
 
     def options_menu(self) -> None:
         """
@@ -232,29 +244,43 @@ class StartScene(Scene):
         as the new active menu.
         Current option values are read from the local configuration file.
         """
-        self.menu_manager.open_menu(menu_creator_manager.create_options_menu(
-            {
-                "move_speed": int(self.read_options_file("move_speed")),
-                "screen_size": int(self.read_options_file("screen_size")),
-            },
-            self.modify_option_value,
-        ))
+        self.menu_manager.open_menu(
+            menu_creator_manager.create_options_menu(
+                {
+                    "language": str(self.read_options_file("language")),
+                    "move_speed": int(self.read_options_file("move_speed")),
+                    "screen_size": int(self.read_options_file("screen_size")),
+                },
+                self.modify_option_value,
+            )
+        )
+
+    def choose_language_menu(self) -> None:
+        self.menu_manager.open_menu(
+            menu_creator_manager.create_choose_language_menu(self.change_language)
+        )
+
+    def change_language(self, language) -> None:
+        StartScene.modify_options_file("language", language)
+        self.exit = QuitActionKind.RESTART
 
     def exit_game(self) -> None:
         """
         Handle an exit game request.
         """
-        self.exit = True
+        self.exit = QuitActionKind.QUIT
 
-    @staticmethod
-    def modify_option_value(option_name: str, option_value: int) -> None:
+    def modify_option_value(self, option_name: str, option_value: int = 0) -> None:
         """
 
         Keyword arguments:
         option_name --
         option_value --
         """
-        if option_name == "move_speed":
+        if option_name == "language":
+            self.choose_language_menu()
+            return
+        elif option_name == "move_speed":
             Movable.move_speed = option_value
         elif option_name == "screen_size":
             StartScene.screen_size = option_value
@@ -284,7 +310,7 @@ class StartScene(Scene):
         """
         self.menu_manager.motion(position)
 
-    def click(self, button: int, position: Position) -> bool:
+    def click(self, button: int, position: Position) -> QuitActionKind:
         """
         Handle the triggering of a click event.
         Delegate it to the active menu if it is a left-click.

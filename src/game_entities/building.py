@@ -5,9 +5,9 @@ Defines Building class, an entity that can be visited by the player
 from __future__ import annotations
 
 import os
+from typing import Optional
 
 import pygame
-from lxml import etree
 from pygamepopup.components import BoxElement, TextElement
 
 from src.constants import GREEN
@@ -15,6 +15,7 @@ from src.game_entities.character import Character
 from src.game_entities.entity import Entity
 from src.gui.fonts import fonts
 from src.gui.position import Position
+from src.services.language import *
 
 
 class Building(Entity):
@@ -26,12 +27,14 @@ class Building(Entity):
     Keyword arguments:
     name -- the name of the building
     position -- the current position of the building on screen
-    sprite -- the pygame Surface corresponding to the appearance of the building on screen
+    sprite_link -- the relative path to the visual representation of the building on screen
     interaction -- the data structure indicating what should happen the first time someone
     is visiting the building
+    sprite -- the pygame Surface corresponding to the appearance of the building on screen,
+    would be loaded from sprite_link if not provided
 
     Attributes:
-    sprite_link -- the relative path to the visual representation of the element
+    sprite_link -- the relative path to the visual representation of the building on screen
     interaction -- the data structure indicating what should happen the first time someone
     is visiting the building
     door_sfx -- the sound that should be started when someone is visiting the building
@@ -47,11 +50,12 @@ class Building(Entity):
         self,
         name: str,
         position: Position,
-        sprite: str,
-        interaction: dict[str, any] = None,
+        sprite_link: str,
+        interaction: Optional[dict[str, any]] = None,
+        sprite: Optional[pygame.Surface] = None,
     ) -> None:
-        super().__init__(name, position, sprite)
-        self.sprite_link: str = sprite
+        super().__init__(name, position, sprite if sprite else sprite_link)
+        self.sprite_link: str = sprite_link
         self.interaction: dict[str, any] = interaction
         self.door_sfx: pygame.mixer.Sound = pygame.mixer.Sound(
             os.path.join("sound_fx", "door.ogg")
@@ -85,35 +89,35 @@ class Building(Entity):
         if not self.interaction:
             pygame.mixer.Sound.play(self.door_sfx)
             entries.append(
-                [
-                    TextElement("This house seems closed...", font=fonts["ITEM_DESC_FONT"])
-                ]
+                [TextElement(STR_THIS_HOUSE_SEEMS_CLOSED, font=fonts["ITEM_DESC_FONT"])]
             )
         else:
+            pygame.mixer.Sound.play(self.talk_sfx)
             for talk in self.interaction["talks"]:
-                pygame.mixer.Sound.play(self.talk_sfx)
-                entries.append(
-                    [TextElement(talk, font=fonts["ITEM_DESC_FONT"])]
-                )
-            if self.interaction["gold"] > 0:
+                entries.append([TextElement(talk, font=fonts["ITEM_DESC_FONT"])])
+            if "gold" in self.interaction and self.interaction["gold"] > 0:
                 pygame.mixer.Sound.play(self.gold_sfx)
                 actor.gold += self.interaction["gold"]
-                earn_text: str = f'[You received {self.interaction["gold"]} gold]'
+                earn_text: str = f_YOU_RECEIVED_NUMBER_GOLD(self.interaction["gold"])
                 entries.append(
                     [
-                        TextElement(earn_text, font=fonts["ITEM_DESC_FONT"], text_color=GREEN)
+                        TextElement(
+                            earn_text, font=fonts["ITEM_DESC_FONT"], text_color=GREEN
+                        )
                     ]
                 )
-            if self.interaction["item"] is not None:
+            if "item" in self.interaction and self.interaction["item"]:
                 pygame.mixer.Sound.play(self.inventory_sfx)
                 actor.set_item(self.interaction["item"])
-                earn_text: str = f'[You received {self.interaction["item"]}]'
+                earn_text: str = f_YOU_RECEIVED_ITEM(self.interaction["item"])
                 entries.append(
                     [
-                        TextElement(earn_text, font=fonts["ITEM_DESC_FONT"], text_color=GREEN)
+                        TextElement(
+                            earn_text, font=fonts["ITEM_DESC_FONT"], text_color=GREEN
+                        )
                     ]
                 )
-            # Interaction could not been repeated : should be remove after been used
+            # Interaction could not been repeated : should be removed after being used
             self.remove_interaction()
 
         return entries
@@ -150,10 +154,10 @@ class Building(Entity):
             for talk in self.interaction["talks"]:
                 talk_tag: etree.SubElement = etree.SubElement(talks, "talk")
                 talk_tag.text = talk
-            if self.interaction["gold"] > 0:
+            if "gold" in self.interaction and self.interaction["gold"] > 0:
                 gold: etree.SubElement = etree.SubElement(interaction, "gold")
                 gold.text = str(self.interaction["gold"])
-            if self.interaction["item"] is not None:
+            if "item" in self.interaction and self.interaction["item"]:
                 item: etree.SubElement = etree.SubElement(interaction, "item")
                 item.text = self.interaction["item"].name
 

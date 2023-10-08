@@ -7,16 +7,17 @@ from __future__ import annotations
 
 import os
 from enum import IntEnum, auto
-from typing import Sequence, Union, Optional, Set, Type
+from typing import Sequence, Union, Optional, Set, Type, List
 
 import pygame
-from lxml import etree
-from pygamepopup.components import InfoBox, BoxElement, Button, TextElement
-from pygamepopup.components.image_button import ImageButton
+import pytmx
 from pygamepopup.menu_manager import MenuManager
+from pygamepopup.components import BoxElement, Button, TextElement, InfoBox
+from pygamepopup.components.image_button import ImageButton
+
+from src.scenes.scene import QuitActionKind
 
 from src.constants import (
-    MAX_MAP_WIDTH,
     MAX_MAP_HEIGHT,
     MENU_WIDTH,
     MENU_HEIGHT,
@@ -24,7 +25,13 @@ from src.constants import (
     ORANGE,
     ITEM_DELETE_MENU_WIDTH,
     ITEM_INFO_MENU_WIDTH,
-    TILE_SIZE, BLACK, WIN_HEIGHT, WIN_WIDTH, )
+    TILE_SIZE,
+    BLACK,
+    WIN_HEIGHT,
+    WIN_WIDTH,
+    GRID_WIDTH,
+    GRID_HEIGHT,
+)
 from src.game_entities.alteration import Alteration
 from src.game_entities.breakable import Breakable
 from src.game_entities.building import Building
@@ -40,8 +47,10 @@ from src.game_entities.fountain import Fountain
 from src.game_entities.gold import Gold
 from src.game_entities.item import Item
 from src.game_entities.key import Key
-from src.game_entities.mission import MissionType
+from src.game_entities.mission import MissionType, Mission
 from src.game_entities.movable import Movable
+from src.game_entities.objective import Objective
+from src.game_entities.obstacle import Obstacle
 from src.game_entities.player import Player
 from src.game_entities.portal import Portal
 from src.game_entities.shop import Shop
@@ -58,18 +67,51 @@ from src.gui.fonts import fonts
 from src.gui.position import Position
 from src.gui.sidebar import Sidebar
 from src.gui.tools import blit_alpha
+from src.services.language import *
 from src.scenes.scene import Scene
-from src.services import load_from_xml_manager as loader, menu_creator_manager
-from src.services.menu_creator_manager import create_event_dialog, INVENTORY_MENU_ID, SHOP_MENU_ID
+from src.services import (
+    load_from_xml_manager as loader,
+    load_from_tmx_manager as tmx_loader,
+    menu_creator_manager,
+)
+from src.services.menu_creator_manager import (
+    create_save_dialog,
+    create_event_dialog,
+    INVENTORY_MENU_ID,
+    SHOP_MENU_ID,
+    CHARACTER_ACTION_MENU_ID,
+)
 from src.services.menus import CharacterMenu
 from src.services.save_state_manager import SaveStateManager
 
 
 class LevelStatus(IntEnum):
+    VERY_BEGINNING = auto()
     INITIALIZATION = auto()
     IN_PROGRESS = auto()
     ENDED_VICTORY = auto()
     ENDED_DEFEAT = auto()
+
+
+class LevelEntityCollections:
+    def __init__(self):
+        self.obstacles: list[Obstacle] = []
+        self.players: list[Player] = []
+        self.allies: list[Character] = []
+        self.foes: list[Foe] = []
+        self.chests: list[Chest] = []
+        self.buildings: list[Building] = []
+        self.breakables: list[Breakable] = []
+        self.portals: list[Portal] = []
+        self.fountains: list[Fountain] = []
+        self.objectives: list[Objective] = []
+        self.doors: list[Door] = []
+
+    def values(self):
+        return self.__dict__.values()
+
+    def update(self, entities: dict[str, Sequence[Entity]]):
+        self.__dict__.update(entities)
 
 
 class EntityTurn(IntEnum):
@@ -141,7 +183,8 @@ class LevelScene(Scene):
     wait_for_teleportation_destination -- a boolean indicating if the level is waiting for player
     to choose for the destination of a teleportation
     diary_entries -- the log of the most recent battles
-    turn_items -- the items that have been trade during the current player turn
+    traded_items -- the items that have been trade during the current player turn
+    traded_gold -- the gold that have been trade during the current player turn
     wait_sfx -- the sound that should be started when a player ends his turn
     inventory_sfx -- the sound that should be started when the inventory screen is opening
     armor_sfx -- the sound that should be started when the equipment screen is opening
@@ -151,9 +194,16 @@ class LevelScene(Scene):
 
     IDS = [0, 1, 2, 3]
 
-    def __init__(self, screen: pygame.Surface, directory: str, number: int,
-                 status: LevelStatus = LevelStatus.INITIALIZATION, turn: int = 0, data: Optional[etree.Element] = None,
-                 players: Optional[Sequence[Player]] = None) -> None:
+    def __init__(
+        self,
+        screen: pygame.Surface,
+        directory: str,
+        number: int,
+        status: LevelStatus = LevelStatus.VERY_BEGINNING,
+        turn: int = 0,
+        data: Optional[etree.Element] = None,
+        players: Optional[Sequence[Player]] = None,
+    ) -> None:
         if players is None:
             players = []
 
@@ -161,30 +211,41 @@ class LevelScene(Scene):
         self.active_screen_part = self._compute_active_screen_part()
 
         Shop.interaction_callback = self.interact_item_shop
-        Shop.buy_interface_callback = lambda: self.menu_manager.open_menu(self.active_shop.menu)
+        Shop.buy_interface_callback = lambda: self.menu_manager.open_menu(
+            self.active_shop.menu
+        )
         Shop.sell_interface_callback = self.open_sell_interface
 
         self.directory: str = directory
         self.number: int = number
 
-        map_image: pygame.Surface = pygame.image.load(self.directory + "map.png")
+        self.tmx_data = pytmx.load_pygame(self.directory + "map.tmx")
+        self.tmx_map_properties_data = pytmx.load_pygame(
+            DATA_PATH + self.directory + "map_properties.tmx"
+        )
+        map_width, map_height = (
+            self.tmx_data.width * TILE_SIZE,
+            self.tmx_data.height * TILE_SIZE,
+        )
+        map_static_content = tmx_loader.load_ground(
+            self.tmx_data, (map_width, map_height)
+        )
+
         self.map: dict[str, any] = {
-            "img": map_image,
-            "width": map_image.get_width(),
-            "height": map_image.get_height(),
-            "x": (MAX_MAP_WIDTH - map_image.get_width()) // 2,
-            "y": (MAX_MAP_HEIGHT - map_image.get_height()) // 2,
+            "img": map_static_content,
+            "width": map_width,
+            "height": map_height,
+            "x": (GRID_WIDTH - self.tmx_data.width) // 2 * TILE_SIZE,
+            "y": (GRID_HEIGHT - self.tmx_data.height) // 2 * TILE_SIZE,
         }
 
-        self.tree: etree.Element = etree.parse(self.directory + "data.xml").getroot()
         self.data: Optional[etree.Element] = data
 
-        self.chapter: int = int(self.tree.find("chapter").text.strip())
-        self.name: str = self.tree.find("name").text.strip()
+        self.chapter: int = self.tmx_map_properties_data.properties["chapter_id"]
+        self.name: str = self.tmx_map_properties_data.properties["level_name"]
 
         self.is_loaded: bool = False
 
-        self.obstacles: list[Position] = []
         self.events: dict[str, any] = {}
         self.player_possible_placements: Sequence[Position] = []
 
@@ -192,9 +253,10 @@ class LevelScene(Scene):
         self.players: list[Player] = players
         self.escaped_players: list[Player] = []
 
-        self.entities: dict[str, list[Entity]] = {}
+        self.entities: LevelEntityCollections = LevelEntityCollections()
 
-        self.missions, self.main_mission = None, None
+        self.missions: Optional[List[Mission]] = None
+        self.main_mission: Optional[Mission] = None
 
         # Booleans for end game
         # TODO : these booleans are mutually exclusive and so seem a little redundant.
@@ -224,6 +286,7 @@ class LevelScene(Scene):
         self.wait_for_teleportation_destination: bool = False
         self.diary_entries: list[list[BoxElement]] = []
         self.traded_items: list[list[Union[Item, Player]]] = []
+        self.traded_gold: list[list[Union[int, Player]]] = []
 
         self.wait_sfx: Optional[pygame.mixer.Sound] = None
         self.inventory_sfx: Optional[pygame.mixer.Sound] = None
@@ -231,75 +294,125 @@ class LevelScene(Scene):
         self.talk_sfx: Optional[pygame.mixer.Sound] = None
         self.gold_sfx: Optional[pygame.mixer.Sound] = None
 
+
+    @property
+    def diary_entries_text_element_set(self):
+        """
+        Return a list of TextElements being shown in the menu.
+        """
+        default_diary_entries = [
+            [
+                TextElement(
+                    STR_DEFAULT_DIARY_BODY_CONTENT,
+                    font=fonts["ITEM_DESC_FONT"],
+                )
+            ]
+        ]
+        if self.diary_entries:
+            return self.diary_entries
+        return default_diary_entries
+
+    def no_dont_save(self):
+        self.menu_manager.close_active_menu()
+
+    def yes_save(self):
+        self.menu_manager.close_active_menu()
+        self.open_save_menu()
+
     def load_level_content(self) -> None:
         """
         Load all the content of the level
         """
-        self.obstacles = loader.load_obstacles(
-            self.tree.find("obstacles"), self.map["x"], self.map["y"]
+
+        self.events = tmx_loader.load_events(
+            self.tmx_data, DATA_PATH + self.directory, self.map["x"], self.map["y"]
         )
 
-        self.events = loader.load_events(
-            self.tree.find("events"), self.map["x"], self.map["y"]
+        self.player_possible_placements = tmx_loader.load_player_placements(
+            self.tmx_data, self.map["x"], self.map["y"]
         )
 
-        self.player_possible_placements = loader.load_placements(
-            self.tree.findall("placementArea/position"), self.map["x"], self.map["y"]
+        self.entities.players = self.players
+        self.entities.obstacles = tmx_loader.load_obstacles(
+            self.tmx_data, self.map["x"], self.map["y"]
         )
-
-        self.entities["players"] = self.players
 
         if self.data is None:
             # Game is new
-            from_save: bool = False
-            data_tree: etree.Element = self.tree
             gap_x, gap_y = (self.map["x"], self.map["y"])
             if "before_init" in self.events:
                 if "dialogs" in self.events["before_init"]:
                     for dialog in self.events["before_init"]["dialogs"]:
-                        self.menu_manager.open_menu(
-                            create_event_dialog(dialog)
-                        )
+                        self.menu_manager.open_menu(create_event_dialog(dialog))
                 if "new_players" in self.events["before_init"]:
                     for player_el in self.events["before_init"]["new_players"]:
                         player = loader.init_player(player_el["name"])
                         player.position = player_el["position"]
                         self.players.append(player)
+            if self.number != 0:
+                # Level_0 doesn't need save reminder
+                self.menu_manager.open_menu(
+                    create_save_dialog({"yes": self.yes_save, "no": self.no_dont_save})
+                )
 
             self._determine_players_initial_position()
+
+            self.entities.foes = tmx_loader.load_foes(self.tmx_data, gap_x, gap_y)
+            self.entities.chests = tmx_loader.load_chests(self.tmx_data, gap_x, gap_y)
+            self.entities.allies = tmx_loader.load_allies(self.tmx_data, gap_x, gap_y)
+            self.entities.buildings = tmx_loader.load_buildings(
+                self.tmx_data, DATA_PATH + self.directory, gap_x, gap_y
+            )
+            self.entities.breakables = tmx_loader.load_breakables(
+                self.tmx_data, gap_x, gap_y
+            )
+            self.entities.portals = tmx_loader.load_portals(self.tmx_data, gap_x, gap_y)
+            self.entities.doors = tmx_loader.load_doors(self.tmx_data, gap_x, gap_y)
+            self.entities.fountains = tmx_loader.load_fountains(
+                self.tmx_data, gap_x, gap_y
+            )
         else:
             # Game is loaded from a save (data)
-            from_save = True
-            data_tree = self.data
             gap_x, gap_y = (0, 0)
-            self.players.extend(loader.load_players(data_tree))
-            self.escaped_players = loader.load_escaped_players(data_tree)
+            if self.game_phase == LevelStatus.VERY_BEGINNING:
+                # If game is in very beginning, show dialogs
+                if "before_init" in self.events:
+                    if "dialogs" in self.events["before_init"]:
+                        for dialog in self.events["before_init"]["dialogs"]:
+                            self.menu_manager.open_menu(create_event_dialog(dialog))
+            self.players.extend(loader.load_players(self.data))
+            self.escaped_players = loader.load_escaped_players(self.data)
+            self.entities.update(
+                loader.load_all_entities_from_save(self.data, gap_x, gap_y)
+            )
 
-        self.entities.update(loader.load_all_entities(data_tree, from_save, gap_x, gap_y))
-
-        self.missions, self.main_mission = loader.load_missions(
-            self.tree, self.players, self.map["x"], self.map["y"]
+        self.missions, self.main_mission = tmx_loader.load_missions(
+            self.tmx_data,
+            self.tmx_map_properties_data,
+            self.players,
+            self.map["x"],
+            self.map["y"],
         )
+        self.entities.objectives = [
+            objective
+            for mission in self.missions
+            for objective in mission.objective_tiles
+        ]
 
         self.sidebar = Sidebar(
-            (MENU_WIDTH, MENU_HEIGHT), pygame.Vector2(0, MAX_MAP_HEIGHT), self.missions, self.number
+            (MENU_WIDTH, MENU_HEIGHT),
+            pygame.Vector2(0, MAX_MAP_HEIGHT),
+            self.missions,
+            self.number,
         )
 
-        self.wait_sfx = pygame.mixer.Sound(
-            os.path.join("sound_fx", "waiting.ogg")
-        )
+        self.wait_sfx = pygame.mixer.Sound(os.path.join("sound_fx", "waiting.ogg"))
         self.inventory_sfx = pygame.mixer.Sound(
             os.path.join("sound_fx", "inventory.ogg")
         )
-        self.armor_sfx = pygame.mixer.Sound(
-            os.path.join("sound_fx", "armor.ogg")
-        )
-        self.talk_sfx = pygame.mixer.Sound(
-            os.path.join("sound_fx", "talking.ogg")
-        )
-        self.gold_sfx = pygame.mixer.Sound(
-            os.path.join("sound_fx", "trade.ogg")
-        )
+        self.armor_sfx = pygame.mixer.Sound(os.path.join("sound_fx", "armor.ogg"))
+        self.talk_sfx = pygame.mixer.Sound(os.path.join("sound_fx", "talking.ogg"))
+        self.gold_sfx = pygame.mixer.Sound(os.path.join("sound_fx", "trade.ogg"))
 
         self.is_loaded = True
 
@@ -310,13 +423,15 @@ class LevelScene(Scene):
                     player.set_initial_pos(tile)
                     break
             else:
-                print("Error ! Not enough free tiles to set players...")
+                print(STR_ERROR_NOT_ENOUGH_TILES_TO_SET_PLAYERS)
 
     def open_save_menu(self) -> None:
         """
-        Replace the current active menu by the a freshly created save game interface
+        Replace the current active menu by a freshly created save game interface
         """
-        self.menu_manager.open_menu(menu_creator_manager.create_save_menu(self.save_game))
+        self.menu_manager.open_menu(
+            menu_creator_manager.create_save_menu(self.save_game)
+        )
 
     def save_game(self, slot_id: int) -> None:
         """
@@ -327,11 +442,13 @@ class LevelScene(Scene):
         """
         save_state_manager = SaveStateManager(self)
         save_state_manager.save_game(slot_id)
-        self.menu_manager.open_menu(InfoBox(
-            "Game has been saved",
-            [[]],
-            width=ITEM_MENU_WIDTH
-        ))
+        self.menu_manager.open_menu(
+            InfoBox(
+                STR_GAME_HAS_BEEN_SAVED,
+                [[]],
+                width=ITEM_MENU_WIDTH,
+            )
+        )
 
     def exit_game(self) -> None:
         """
@@ -375,12 +492,8 @@ class LevelScene(Scene):
             if "at_end" in self.events:
                 if "dialogs" in self.events["at_end"]:
                     for dialog in self.events["at_end"]["dialogs"]:
-                        self.menu_manager.open_menu(
-                            create_event_dialog(dialog)
-                        )
-        self.animation = Animation(
-            [Frame(animation_surface, position)], 180
-        )
+                        self.menu_manager.open_menu(create_event_dialog(dialog))
+        self.animation = Animation([Frame(animation_surface, position)], 180)
 
     def update_state(self) -> bool:
         """
@@ -397,7 +510,10 @@ class LevelScene(Scene):
         if self.animation:
             if self.animation.animate():
                 self.animation = None
-                if self.game_phase > LevelStatus.IN_PROGRESS and not self.menu_manager.active_menu:
+                if (
+                    self.game_phase > LevelStatus.IN_PROGRESS
+                    and not self.menu_manager.active_menu
+                ):
                     self.exit_game()
             return False
 
@@ -434,23 +550,28 @@ class LevelScene(Scene):
 
         if self.selected_player:
             self.selected_player.move()
-            if self.selected_player.is_waiting_post_action() and not self.possible_attacks \
-                and not self.possible_interactions:
+            if (
+                self.selected_player.is_waiting_post_action()
+                and not self.possible_attacks
+                and not self.possible_interactions
+            ):
                 self.open_player_menu()
             return False
 
-        entities = []
+        entities: list[Movable] = []
         if self.side_turn is EntityTurn.PLAYER:
             entities = self.players
         elif self.side_turn is EntityTurn.ALLIES:
-            entities = self.entities["allies"]
+            entities = self.entities.allies
         elif self.side_turn is EntityTurn.FOES:
-            entities = self.entities["foes"]
+            entities = self.entities.foes
 
         for entity in entities:
             if not entity.turn_is_finished():
                 if self.side_turn is not EntityTurn.PLAYER:
-                    self.entity_action(entity, (self.side_turn is EntityTurn.ALLIES))
+                    self.process_entity_action(
+                        entity, (self.side_turn is EntityTurn.ALLIES)
+                    )
                 break
         else:
             self.side_turn = self.side_turn.get_next()
@@ -462,37 +583,39 @@ class LevelScene(Scene):
         """
         Open the menu displaying all the actions a playable character can do
         """
-        interactable_entities = (
-            self.entities["chests"]
-            + self.entities["portals"]
-            + self.entities["doors"]
-            + self.entities["fountains"]
-            + self.entities["allies"]
+        interactable_entities: list[Entity] = (
+            self.entities.chests
+            + self.entities.portals
+            + self.entities.doors
+            + self.entities.fountains
+            + self.entities.allies
             + self.players
         )
-        self.menu_manager.open_menu(menu_creator_manager.create_player_menu(
-            {
-                "inventory": self.open_inventory,
-                "equipment": self.open_equipment,
-                "status": self.open_status_interface,
-                "wait": self.end_active_character_turn,
-                "visit": self.select_visit,
-                "trade": lambda: self.select_interaction_with(Player),
-                "open_chest": self.try_open_chest,
-                "pick_lock": self.select_pick_lock,
-                "open_door": self.try_open_door,
-                "use_portal": lambda: self.select_interaction_with(Portal),
-                "drink": lambda: self.select_interaction_with(Fountain),
-                "talk": self.select_talk,
-                "take": self.take_objective,
-                "attack": self.select_attack_target,
-            },
-            self.selected_player,
-            self.entities["buildings"],
-            interactable_entities,
-            self.missions,
-            self.entities["foes"],
-        ))
+        self.menu_manager.open_menu(
+            menu_creator_manager.create_player_menu(
+                {
+                    "inventory": self.open_inventory,
+                    "equipment": self.open_equipment,
+                    "status": self.open_status_interface,
+                    "wait": self.end_active_character_turn,
+                    "visit": self.select_visit,
+                    "trade": lambda: self.select_interaction_with(Player),
+                    "open_chest": self.try_open_chest,
+                    "pick_lock": self.select_pick_lock,
+                    "open_door": self.try_open_door,
+                    "use_portal": lambda: self.select_interaction_with(Portal),
+                    "drink": lambda: self.select_interaction_with(Fountain),
+                    "talk": self.select_talk,
+                    "take": self.take_objective,
+                    "attack": self.select_attack_target,
+                },
+                self.selected_player,
+                self.entities.buildings,
+                interactable_entities,
+                self.missions,
+                self.entities.foes,
+            )
+        )
 
     def display(self) -> None:
         """
@@ -503,6 +626,9 @@ class LevelScene(Scene):
         """
         self.active_screen_part.blit(self.map["img"], (self.map["x"], self.map["y"]))
         self.sidebar.display(self.active_screen_part, self.turn, self.hovered_entity)
+
+        for mission in self.missions:
+            mission.display(self.active_screen_part)
 
         for collection in self.entities.values():
             for entity in collection:
@@ -520,9 +646,13 @@ class LevelScene(Scene):
             if self.selected_player:
                 # If player is waiting to move
                 if self.possible_moves:
-                    self.show_possible_actions(self.selected_player, self.active_screen_part)
+                    self.show_possible_actions(
+                        self.selected_player, self.active_screen_part
+                    )
                 elif self.possible_attacks:
-                    self.show_possible_attacks(self.selected_player, self.active_screen_part)
+                    self.show_possible_attacks(
+                        self.selected_player, self.active_screen_part
+                    )
                 elif self.possible_interactions:
                     self.show_possible_interactions(self.active_screen_part)
 
@@ -576,7 +706,9 @@ class LevelScene(Scene):
         screen -- the screen on which the possibilities should be drawn
         """
         for tile in self.possible_interactions:
-            blit_alpha(screen, constant_sprites["interaction"], tile, INTERACTION_OPACITY)
+            blit_alpha(
+                screen, constant_sprites["interaction"], tile, INTERACTION_OPACITY
+            )
 
     def show_possible_placements(self, screen: pygame.Surface) -> None:
         """
@@ -624,7 +756,9 @@ class LevelScene(Scene):
                 tiles_content.append(tile_content)
         return tiles_content
 
-    def get_possible_moves(self, position: tuple[int, int], max_moves: int) -> dict[tuple[int, int], int]:
+    def get_possible_moves(
+        self, position: Position, max_moves: int
+    ) -> dict[Position, int]:
         """
         Return all the possible moves with their distance from the starting position
 
@@ -632,25 +766,32 @@ class LevelScene(Scene):
         position -- the starting position
         max_moves -- the maximum number of tiles that could be traveled
         """
-        tiles: dict[tuple[int, int], int] = {position: 0}
-        previously_computed_tiles: dict[tuple[int, int], int] = tiles
+        tiles: dict[Position, int] = {position: 0}
+        previously_computed_tiles: dict[Position, int] = tiles
         for i in range(1, max_moves + 1):
-            tiles_current_level: dict[tuple[int, int], int] = {}
+            tiles_current_level: dict[Position, int] = {}
             for tile in previously_computed_tiles:
                 for x_coordinate in range(-1, 2):
                     for y_coordinate in (1 - abs(x_coordinate), -1 + abs(x_coordinate)):
                         tile_x: int = tile[0] + (x_coordinate * TILE_SIZE)
                         tile_y: int = tile[1] + (y_coordinate * TILE_SIZE)
                         tile_position = (tile_x, tile_y)
-                        if self.is_tile_available(tile_position) and tile_position not in tiles:
+                        if (
+                            self.is_tile_available(tile_position)
+                            and tile_position not in tiles
+                        ):
                             tiles_current_level[tile_position] = i
             tiles.update(previously_computed_tiles)
             previously_computed_tiles = tiles_current_level
         tiles.update(previously_computed_tiles)
         return tiles
 
-    def get_possible_attacks(self, possible_moves: Sequence[tuple[int, int]],
-                             reach: Sequence[int], from_ally_side: bool) -> Set[tuple[float, float]]:
+    def get_possible_attacks(
+        self,
+        possible_moves: Sequence[tuple[int, int]],
+        reach: Sequence[int],
+        from_ally_side: bool,
+    ) -> Set[tuple[float, float]]:
         """
         Return all the tiles that could be targeted for an attack from a specific entity
 
@@ -661,11 +802,11 @@ class LevelScene(Scene):
         """
         tiles: list[tuple[float, float]] = []
 
-        entities = list(self.entities["breakables"])
+        entities = list(self.entities.breakables)
         if from_ally_side:
-            entities += self.entities["foes"]
+            entities += self.entities.foes
         else:
-            entities += self.entities["allies"] + self.players
+            entities += self.entities.allies + self.players
 
         for entity in entities:
             for i in reach:
@@ -679,7 +820,7 @@ class LevelScene(Scene):
 
         return set(tiles)
 
-    def is_tile_available(self, tile: tuple[int, int]) -> bool:
+    def is_tile_available(self, tile: Position) -> bool:
         """
         Return whether the given tile can be accessed or not
 
@@ -699,9 +840,14 @@ class LevelScene(Scene):
         ):
             return False
 
-        return self.get_entity_on_tile(tile) is None and tile not in self.obstacles
+        entity_on_tile = self.get_entity_on_tile(tile)
+        if isinstance(entity_on_tile, Objective):
+            if entity_on_tile.is_walkable:
+                return True
 
-    def get_entity_on_tile(self, tile: tuple[int, int]) -> Optional[Entity]:
+        return entity_on_tile is None
+
+    def get_entity_on_tile(self, tile: Position) -> Optional[Entity]:
         """
         Return the entity that is on the given tile if there is any
 
@@ -715,8 +861,9 @@ class LevelScene(Scene):
                     return entity
         return None
 
-    def determine_path_to(self, destination_tile: Position,
-                          distance_for_tile: dict[tuple[int, int], int]) -> list[Position]:
+    def determine_path_to(
+        self, destination_tile: Position, distance_for_tile: dict[tuple[int, int], int]
+    ) -> list[Position]:
         """
         Return an ordered list of position that represent the path from one tile to another
 
@@ -728,7 +875,9 @@ class LevelScene(Scene):
         current_tile: tuple[int, int] = tuple(destination_tile)
         while distance_for_tile[current_tile] > 1:
             # Check for neighbour cases
-            available_tiles: dict[tuple[int, int], int] = self.get_possible_moves(tuple(current_tile), 1)
+            available_tiles: dict[tuple[int, int], int] = self.get_possible_moves(
+                tuple(current_tile), 1
+            )
             for tile in available_tiles:
                 if tile in distance_for_tile:
                     distance = distance_for_tile[tile]
@@ -737,8 +886,9 @@ class LevelScene(Scene):
                         path.insert(0, pygame.Vector2(current_tile))
         return path
 
-    def distance_between_all(self, entity: Entity, all_other_entities: Sequence) -> \
-        dict[Entity, int]:
+    def distance_between_all(
+        self, entity: Entity, all_other_entities: Sequence
+    ) -> dict[Entity, int]:
         """
         Return the distance between each different given entities for a reference entity
 
@@ -751,7 +901,8 @@ class LevelScene(Scene):
             (self.map["width"] * self.map["height"]) // (TILE_SIZE * TILE_SIZE),
         )
         entities_distance: dict[Entity, int] = {
-            entity: self.map["width"] * self.map["height"] for entity in all_other_entities
+            entity: self.map["width"] * self.map["height"]
+            for entity in all_other_entities
         }
         for tile, distance in free_tiles_distance.items():
             for neighbour in self.get_next_cases(tile):
@@ -788,23 +939,30 @@ class LevelScene(Scene):
             frame_background_path="imgs/interface/blue_frame.png",
             frame_background_hover_path="imgs/interface/blue_frame.png",
             background_path="imgs/interface/item_frame.png",
-            text_color=BLACK
+            text_color=BLACK,
         )
-        item_element.callback = lambda button=item_element, item_reference=item: self.interact_item(
-            item_reference, button, is_equipped=False
+        item_element.callback = (
+            lambda button=item_element, item_reference=item: self.interact_item(
+                item_reference, button, is_equipped=False
+            )
         )
         element_grid = [
             [item_element],
             [
-                TextElement("Item has been added to your inventory", font=fonts["ITEM_DESC_FONT"])
+                TextElement(
+                    STR_ITEM_HAS_BEEN_ADDED_TO_UR_INVENTORY,
+                    font=fonts["ITEM_DESC_FONT"],
+                )
             ],
         ]
 
-        self.menu_manager.open_menu(InfoBox(
-            "You found in the chest",
-            element_grid,
-            width=ITEM_MENU_WIDTH,
-        ))
+        self.menu_manager.open_menu(
+            InfoBox(
+                STR_YOU_FOUND_IN_THE_CHEST,
+                element_grid,
+                width=ITEM_MENU_WIDTH,
+            )
+        )
 
         self.end_active_character_turn(clear_menus=False)
 
@@ -816,19 +974,19 @@ class LevelScene(Scene):
         Keyword arguments:
         door -- the door that should be opened
         """
-        self.entities["doors"].remove(door)
+        self.entities.doors.remove(door)
 
         # TODO: move the creation of the pop-up in menu_creator_manager
         grid_element = [
-            [
-                TextElement("Door has been opened", font=fonts["ITEM_DESC_FONT"])
-            ]
+            [TextElement(STR_DOOR_HAS_BEEN_OPENED, font=fonts["ITEM_DESC_FONT"])]
         ]
-        self.menu_manager.open_menu(InfoBox(
-            str(door),
-            grid_element,
-            width=ITEM_MENU_WIDTH,
-        ))
+        self.menu_manager.open_menu(
+            InfoBox(
+                str(door),
+                grid_element,
+                width=ITEM_MENU_WIDTH,
+            )
+        )
 
         self.end_active_character_turn(clear_menus=False)
 
@@ -840,7 +998,7 @@ class LevelScene(Scene):
         Keyword argument:
         character -- the character that should be cast
         """
-        self.entities["allies"].remove(character)
+        self.entities.allies.remove(character)
         player = Player(
             name=character.name,
             sprite=character.sprite,
@@ -856,13 +1014,15 @@ class LevelScene(Scene):
             skills=character.skills,
             alterations=character.alterations,
         )
-        self.entities["players"].append(player)
+        self.entities.players.append(player)
         player.earn_xp(character.experience)
         player.hit_points = character.hit_points
         player.position = character.position
         player.items = character.items
 
-    def interact(self, actor: Character, target: Entity, target_position: Position) -> None:
+    def interact(
+        self, actor: Character, target: Entity, target_position: Position
+    ) -> None:
         """
         Handle the interaction of a character with a given entity
 
@@ -898,14 +1058,19 @@ class LevelScene(Scene):
                         # TODO: move the creation of the pop-up in menu_creator_manager
                         element_grid = [
                             [
-                                TextElement("Started picking, one more turn to go", font=fonts["ITEM_DESC_FONT"])
+                                TextElement(
+                                    STR_STARTED_PICKING_ONE_MORE_TURN_TO_GO,
+                                    font=fonts["ITEM_DESC_FONT"],
+                                )
                             ]
                         ]
-                        self.menu_manager.open_menu(InfoBox(
-                            "Chest",
-                            element_grid,
-                            width=ITEM_MENU_WIDTH,
-                        ))
+                        self.menu_manager.open_menu(
+                            InfoBox(
+                                STR_CHEST,
+                                element_grid,
+                                width=ITEM_MENU_WIDTH,
+                            )
+                        )
                         self.end_active_character_turn(clear_menus=False)
                     else:
                         # Lock picking is finished, get content
@@ -913,11 +1078,13 @@ class LevelScene(Scene):
 
             else:
                 # TODO: move the creation of the pop-up in menu_creator_manager
-                self.menu_manager.open_menu(InfoBox(
-                    "You have no free space in your inventory",
-                    [],
-                    width=ITEM_MENU_WIDTH,
-                ))
+                self.menu_manager.open_menu(
+                    InfoBox(
+                        STR_YOU_HAVE_NO_FREE_SPACE_IN_YOUR_INVENTORY,
+                        [],
+                        width=ITEM_MENU_WIDTH,
+                    )
+                )
         # Check if player tries to open a door
         elif isinstance(target, Door):
             if self.selected_player.current_action is CharacterMenu.OPEN_DOOR:
@@ -930,14 +1097,19 @@ class LevelScene(Scene):
                     # TODO: move the creation of the pop-up in menu_creator_manager
                     grid_element = [
                         [
-                            TextElement("Started picking, one more turn to go", font=fonts["ITEM_DESC_FONT"])
+                            TextElement(
+                                STR_STARTED_PICKING_ONE_MORE_TURN_TO_GO,
+                                font=fonts["ITEM_DESC_FONT"],
+                            )
                         ]
                     ]
-                    self.menu_manager.open_menu(InfoBox(
-                        str(target),
-                        grid_element,
-                        width=ITEM_MENU_WIDTH,
-                    ))
+                    self.menu_manager.open_menu(
+                        InfoBox(
+                            str(target),
+                            grid_element,
+                            width=ITEM_MENU_WIDTH,
+                        )
+                    )
                     self.end_active_character_turn(clear_menus=False)
                 else:
                     # Lock picking is finished, get content
@@ -945,50 +1117,59 @@ class LevelScene(Scene):
         # Check if player tries to use a portal
         elif isinstance(target, Portal):
             new_based_position: Position = target.linked_to.position
-            possible_positions_with_distance: dict[Position, int] = \
-                self.get_possible_moves(tuple(new_based_position), 1)
+            possible_positions_with_distance: dict[
+                Position, int
+            ] = self.get_possible_moves(tuple(new_based_position), 1)
             # Remove portal pos since player cannot be on the portal
             del possible_positions_with_distance[new_based_position]
             if possible_positions_with_distance:
                 self.possible_interactions = possible_positions_with_distance.keys()
                 self.wait_for_teleportation_destination = True
             else:
-                self.menu_manager.open_menu(InfoBox(
-                    "There is no free square around the other portal",
-                    [],
-                    width=ITEM_MENU_WIDTH,
-                ))
+                self.menu_manager.open_menu(
+                    InfoBox(
+                        STR_THERE_IS_NO_FREE_SQUARE_AROUND_THE_OTHER_PORTAL,
+                        [],
+                        width=ITEM_MENU_WIDTH,
+                    )
+                )
         # Check if player tries to drink in a fountain
         elif isinstance(target, Fountain):
             element_grid = target.drink(actor)
-            self.menu_manager.open_menu(InfoBox(
-                str(target),
-                element_grid,
-                width=ITEM_MENU_WIDTH,
-            ))
+            self.menu_manager.open_menu(
+                InfoBox(
+                    str(target),
+                    element_grid,
+                    width=ITEM_MENU_WIDTH,
+                )
+            )
 
             self.end_active_character_turn(clear_menus=False)
         # Check if player tries to trade with another player
         elif isinstance(target, Player):
-            self.menu_manager.open_menu(menu_creator_manager.create_trade_menu(
-                {
-                    "interact_item": self.interact_trade_item,
-                    "send_gold": self.send_gold,
-                },
-                self.selected_player,
-                target,
-            ))
+            self.menu_manager.open_menu(
+                menu_creator_manager.create_trade_menu(
+                    {
+                        "interact_item": self.interact_trade_item,
+                        "send_gold": self.send_gold,
+                    },
+                    self.selected_player,
+                    target,
+                )
+            )
         # Check if player tries to talk to a character
         elif isinstance(target, Character):
             pygame.mixer.Sound.play(self.talk_sfx)
 
             element_grid = target.talk(actor)
-            self.menu_manager.open_menu(InfoBox(
-                str(target),
-                element_grid,
-                width=ITEM_MENU_WIDTH,
-                title_color=ORANGE,
-            ))
+            self.menu_manager.open_menu(
+                InfoBox(
+                    str(target),
+                    element_grid,
+                    width=ITEM_MENU_WIDTH,
+                    title_color=ORANGE,
+                )
+            )
             # Check if character is now a player
             if target.join_team:
                 self.ally_to_player(target)
@@ -1000,12 +1181,14 @@ class LevelScene(Scene):
                 self.active_shop = target
 
             element_grid = target.interact(actor)
-            self.menu_manager.open_menu(InfoBox(
-                str(target),
-                element_grid,
-                width=ITEM_MENU_WIDTH,
-                title_color=ORANGE,
-            ))
+            self.menu_manager.open_menu(
+                InfoBox(
+                    str(target),
+                    element_grid,
+                    width=ITEM_MENU_WIDTH,
+                    title_color=ORANGE,
+                )
+            )
 
             self.end_active_character_turn(clear_menus=False)
 
@@ -1018,17 +1201,23 @@ class LevelScene(Scene):
         """
         collection = None
         if isinstance(entity, Foe):
-            collection = self.entities["foes"]
+            collection = self.entities.foes
         elif isinstance(entity, Player):
-            collection = self.entities["players"]
+            collection = self.entities.players
         elif isinstance(entity, Breakable):
-            collection = self.entities["breakables"]
+            collection = self.entities.breakables
         elif isinstance(entity, Character):
-            collection = self.entities["allies"]
+            collection = self.entities.allies
         collection.remove(entity)
 
-    def duel(self, attacker: Movable, target: Destroyable, attacker_allies: Sequence[Destroyable],
-             target_allies: Sequence[Destroyable], kind: DamageKind) -> None:
+    def duel(
+        self,
+        attacker: Movable,
+        target: Destroyable,
+        attacker_allies: Sequence[Destroyable],
+        target_allies: Sequence[Destroyable],
+        kind: DamageKind,
+    ) -> None:
         """
         Handle the development of an attack from one entity to another
 
@@ -1045,7 +1234,7 @@ class LevelScene(Scene):
 
             if isinstance(target, Character) and target.parried():
                 # Target parried attack
-                message: str = f"{attacker} attacked {target}... But {target} parried!"
+                message: str = f_ATTACKER_ATTACKED_TARGET_BUT_PARRIED(attacker, target)
                 self.diary_entries.append(
                     [TextElement(message, font=fonts["ITEM_DESC_FONT"])]
                 )
@@ -1057,7 +1246,12 @@ class LevelScene(Scene):
             )
             self.diary_entries.append(
                 [
-                    TextElement(f"{attacker} dealt {real_damage} damage to {target}", font=fonts["ITEM_DESC_FONT"])
+                    TextElement(
+                        f_ATTACKER_DEALT_DAMAGE_TO_TARGET(
+                            attacker, target, real_damage
+                        ),
+                        font=fonts["ITEM_DESC_FONT"],
+                    )
                 ]
             )
             # XP gain for dealt damage
@@ -1065,22 +1259,23 @@ class LevelScene(Scene):
             # If target has less than 0 HP at the end of the attack
             if target.hit_points <= 0:
                 # XP gain increased
-                if isinstance(attacker, Character):
+                if isinstance(attacker, Character) and isinstance(target, Foe):
                     experience += target.xp_gain
 
                 self.diary_entries.append(
-                    [
-                        TextElement(f"{target} died!", font=fonts["ITEM_DESC_FONT"])
-                    ]
+                    [TextElement(f_TARGET_DIED(target), font=fonts["ITEM_DESC_FONT"])]
                 )
                 # Loot
-                if isinstance(attacker, Player):
+                if isinstance(attacker, Player) and isinstance(target, Foe):
                     # Check if foe dropped an item
                     loot: Sequence[Item] = target.roll_for_loot()
                     for item in loot:
                         self.diary_entries.append(
                             [
-                                TextElement(f"{target} dropped {item}", font=fonts["ITEM_DESC_FONT"])
+                                TextElement(
+                                    f_TARGET_DROPPED_ITEM(target, item),
+                                    font=fonts["ITEM_DESC_FONT"],
+                                )
                             ]
                         )
                         if isinstance(item, Gold):
@@ -1088,42 +1283,53 @@ class LevelScene(Scene):
                         elif not attacker.set_item(item):
                             self.diary_entries.append(
                                 [
-                                    TextElement("But there is not enough space "
-                                                "in inventory to take it!", font=fonts["ITEM_DESC_FONT"])
+                                    TextElement(
+                                        STR_BUT_THERE_IS_NOT_ENOUGH_SPACE_IN_INVENTORY_TO_TAKE_IT,
+                                        font=fonts["ITEM_DESC_FONT"],
+                                    )
                                 ]
                             )
                 self.remove_entity(target)
             else:
                 self.diary_entries.append(
                     [
-                        TextElement(f"{target} has now {target.hit_points} HP", font=fonts["ITEM_DESC_FONT"])
+                        TextElement(
+                            f_TARGET_HAS_NOW_NUMBER_HP(target, target.hit_points),
+                            font=fonts["ITEM_DESC_FONT"],
+                        )
                     ]
                 )
                 # Check if a side effect is applied to target
                 if isinstance(attacker, Character):
                     weapon: Weapon = attacker.get_weapon()
                     if weapon:
-                        applied_effects: Sequence[Effect] = weapon.apply_effects(attacker, target)
+                        applied_effects: Sequence[Effect] = weapon.apply_effects(
+                            attacker, target
+                        )
                         for effect in applied_effects:
                             _, message = effect.apply_on_ent(target)
                             self.diary_entries.append(
-                                [
-                                    TextElement(message, font=fonts["ITEM_DESC_FONT"])
-                                ]
+                                [TextElement(message, font=fonts["ITEM_DESC_FONT"])]
                             )
 
             # XP gain
             if isinstance(attacker, Player):
                 self.diary_entries.append(
                     [
-                        TextElement(f"{attacker} earned {experience} XP", font=fonts["ITEM_DESC_FONT"])
+                        TextElement(
+                            f_ATTACKER_EARNED_NUMBER_XP(attacker, experience),
+                            font=fonts["ITEM_DESC_FONT"],
+                        )
                     ]
                 )
                 if attacker.earn_xp(experience):
                     # Attacker gained a level
                     self.diary_entries.append(
                         [
-                            TextElement(f"{attacker} gained a level!", font=fonts["ITEM_DESC_FONT"])
+                            TextElement(
+                                f_ATTACKER_GAINED_A_LEVEL(attacker),
+                                font=fonts["ITEM_DESC_FONT"],
+                            )
                         ]
                     )
 
@@ -1133,7 +1339,7 @@ class LevelScene(Scene):
         while len(self.diary_entries) > 10:
             self.diary_entries.pop(0)
 
-    def entity_action(self, entity: Movable, is_ally: bool) -> None:
+    def process_entity_action(self, entity: Movable, is_ally: bool) -> None:
         """
         Compute the action of a non-playable entity (AI)
 
@@ -1141,15 +1347,18 @@ class LevelScene(Scene):
         entity -- the entity for which the action should be computed
         is_ally -- a boolean indicating if the entity is an ally or not
         """
-        possible_moves: dict[tuple[int, int], int] = self.get_possible_moves(tuple(entity.position),
-                                                                             entity.max_moves)
+        possible_moves: dict[tuple[int, int], int] = self.get_possible_moves(
+            tuple(entity.position), entity.max_moves
+        )
         targets: Sequence[Movable] = (
-            self.entities["foes"] if is_ally else self.players + self.entities["allies"]
+            self.entities.foes if is_ally else self.players + self.entities.allies
         )
         allies: Sequence[Movable] = (
-            self.players + self.entities["allies"] if is_ally else self.entities["foes"]
+            self.players + self.entities.allies if is_ally else self.entities.foes
         )
-        tile: Optional[Position] = entity.act(possible_moves, self.distance_between_all(entity, targets))
+        tile: Optional[Position] = entity.act(
+            possible_moves, self.distance_between_all(entity, targets)
+        )
 
         if tile:
             if tuple(tile) in possible_moves:
@@ -1172,14 +1381,16 @@ class LevelScene(Scene):
         button_position -- the position of the button representing the item on interface
         """
         self.selected_item = item
-        self.menu_manager.open_menu(menu_creator_manager.create_item_shop_menu(
-            {
-                "buy_item": self.try_buy_selected_item,
-                "info_item": self.open_selected_item_description,
-            },
-            item_button.position,
-            item,
-        ))
+        self.menu_manager.open_menu(
+            menu_creator_manager.create_item_shop_menu(
+                {
+                    "buy_item": self.try_buy_selected_item,
+                    "info_item": self.open_selected_item_description,
+                },
+                item_button.position,
+                item,
+            )
+        )
 
     def interact_sell_item(self, item: Item, item_button: Button) -> None:
         """
@@ -1190,14 +1401,16 @@ class LevelScene(Scene):
         button_position -- the position of the button representing the item on interface
         """
         self.selected_item = item
-        self.menu_manager.open_menu(menu_creator_manager.create_item_sell_menu(
-            {
-                "sell_item": self.try_sell_selected_item,
-                "info_item": self.open_selected_item_description,
-            },
-            item_button.position,
-            item,
-        ))
+        self.menu_manager.open_menu(
+            menu_creator_manager.create_item_sell_menu(
+                {
+                    "sell_item": self.try_sell_selected_item,
+                    "info_item": self.open_selected_item_description,
+                },
+                item_button.position,
+                item,
+            )
+        )
 
     def open_sell_interface(self) -> None:
         """
@@ -1206,7 +1419,9 @@ class LevelScene(Scene):
         free_spaces: int = self.active_shop.current_visitor.nb_items_max - len(
             self.active_shop.current_visitor.items
         )
-        items: list[Optional[Item]] = list(self.active_shop.current_visitor.items) + [None] * free_spaces
+        items: list[Optional[Item]] = (
+            self.active_shop.current_visitor.items + [None] * free_spaces
+        )
         self.menu_manager.open_menu(
             menu_creator_manager.create_inventory_menu(
                 self.interact_sell_item,
@@ -1281,7 +1496,9 @@ class LevelScene(Scene):
         self.selected_player.choose_target()
         self.possible_interactions = []
         for entity in self.get_next_cases(self.selected_player.position):
-            if (isinstance(entity, Chest) and not entity.opened) or isinstance(entity, Door):
+            if (isinstance(entity, Chest) and not entity.opened) or isinstance(
+                entity, Door
+            ):
                 self.possible_interactions.append(entity.position)
 
     def try_open_door(self):
@@ -1296,7 +1513,7 @@ class LevelScene(Scene):
                 break
         if not has_key:
             info_box = InfoBox(
-                "You have no key to open a door",
+                STR_YOU_HAVE_NO_KEY_TO_OPEN_A_DOOR,
                 [],
                 width=ITEM_MENU_WIDTH,
             )
@@ -1316,7 +1533,7 @@ class LevelScene(Scene):
                 break
         if not has_key:
             info_box = InfoBox(
-                "You have no key to open a chest",
+                STR_YOU_HAVE_NO_KEY_TO_OPEN_A_CHEST,
                 [],
                 width=ITEM_MENU_WIDTH,
             )
@@ -1364,6 +1581,7 @@ class LevelScene(Scene):
         self.selected_player.end_turn()
         self.selected_player = None
         self.traded_items.clear()
+        self.traded_gold.clear()
         self.possible_moves.clear()
         self.possible_attacks.clear()
         self.possible_interactions.clear()
@@ -1388,7 +1606,9 @@ class LevelScene(Scene):
         free_spaces: int = self.selected_player.nb_items_max - len(
             self.selected_player.items
         )
-        items: list[Optional[Item]] = list(self.selected_player.items) + [None] * free_spaces
+        items: list[Optional[Item]] = (
+            list(self.selected_player.items) + [None] * free_spaces
+        )
         self.menu_manager.open_menu(
             menu_creator_manager.create_inventory_menu(
                 self.interact_item, items, self.selected_player.gold
@@ -1487,9 +1707,13 @@ class LevelScene(Scene):
         if not added:
             grid_elements = [
                 [
-                    TextElement(f"Item can't be traded: not enough place in {receiver}'s inventory",
-                                font=fonts["ITEM_DESC_FONT"],
-                                margin=(20, 0, 20, 0))
+                    TextElement(
+                        f_ITEM_CANNOT_BE_TRADED_NOT_ENOUGH_PLACE_IN_RECEIVERS_INVENTORY(
+                            receiver
+                        ),
+                        font=fonts["ITEM_DESC_FONT"],
+                        margin=(20, 0, 20, 0),
+                    )
                 ]
             ]
         else:
@@ -1510,19 +1734,23 @@ class LevelScene(Scene):
 
             grid_elements = [
                 [
-                    TextElement("Item has been traded",
-                                font=fonts["ITEM_DESC_FONT"],
-                                margin=(20, 0, 20, 0)),
+                    TextElement(
+                        STR_ITEM_HAS_BEEN_TRADED,
+                        font=fonts["ITEM_DESC_FONT"],
+                        margin=(20, 0, 20, 0),
+                    ),
                 ]
             ]
 
             self.traded_items.append([self.selected_item, owner, receiver])
 
-        self.menu_manager.open_menu(InfoBox(
-            str(self.selected_item),
-            grid_elements,
-            width=ITEM_DELETE_MENU_WIDTH,
-        ))
+        self.menu_manager.open_menu(
+            InfoBox(
+                str(self.selected_item),
+                grid_elements,
+                width=ITEM_DELETE_MENU_WIDTH,
+            )
+        )
 
     def send_gold(
         self,
@@ -1545,12 +1773,18 @@ class LevelScene(Scene):
         sender: Player = first_player if is_first_player_sender else second_player
         receiver: Player = second_player if is_first_player_sender else first_player
         Player.trade_gold(sender, receiver, value)
+        self.traded_gold.append([value, sender, receiver])
         self.menu_manager.close_active_menu()
-        self.menu_manager.open_menu(menu_creator_manager.create_trade_menu(
-            {"interact_item": self.interact_trade_item, "send_gold": self.send_gold},
-            first_player,
-            second_player,
-        ))
+        self.menu_manager.open_menu(
+            menu_creator_manager.create_trade_menu(
+                {
+                    "interact_item": self.interact_trade_item,
+                    "send_gold": self.send_gold,
+                },
+                first_player,
+                second_player,
+            )
+        )
 
     def throw_selected_item(self) -> None:
         """
@@ -1558,7 +1792,9 @@ class LevelScene(Scene):
         """
         self.menu_manager.close_active_menu()
         # Remove item from inventory/equipment according to the index
-        if isinstance(self.selected_item, Equipment) and self.selected_player.has_exact_equipment(self.selected_item):
+        if isinstance(
+            self.selected_item, Equipment
+        ) and self.selected_player.has_exact_equipment(self.selected_item):
             self.selected_player.remove_equipment(self.selected_item)
             equipments = list(self.selected_player.equipments)
             new_items_menu = menu_creator_manager.create_equipment_menu(
@@ -1569,7 +1805,9 @@ class LevelScene(Scene):
             free_spaces: int = self.selected_player.nb_items_max - len(
                 self.selected_player.items
             )
-            items: list[Optional[Item]] = list(self.selected_player.items) + [None] * free_spaces
+            items: list[Optional[Item]] = (
+                list(self.selected_player.items) + [None] * free_spaces
+            )
             new_items_menu = menu_creator_manager.create_inventory_menu(
                 self.interact_item, items, self.selected_player.gold
             )
@@ -1577,14 +1815,20 @@ class LevelScene(Scene):
         self.menu_manager.replace_given_menu(INVENTORY_MENU_ID, new_items_menu)
         grid_elements = [
             [
-                TextElement("Item has been thrown away", font=fonts["ITEM_DESC_FONT"], margin=(20, 0, 20, 0))
+                TextElement(
+                    STR_ITEM_HAS_BEEN_THROWN_AWAY,
+                    font=fonts["ITEM_DESC_FONT"],
+                    margin=(20, 0, 20, 0),
+                )
             ]
         ]
-        self.menu_manager.open_menu(InfoBox(
-            str(self.selected_item),
-            grid_elements,
-            width=ITEM_DELETE_MENU_WIDTH,
-        ))
+        self.menu_manager.open_menu(
+            InfoBox(
+                str(self.selected_item),
+                grid_elements,
+                width=ITEM_DELETE_MENU_WIDTH,
+            )
+        )
         self.selected_item = None
 
     def try_sell_selected_item(self) -> None:
@@ -1592,9 +1836,7 @@ class LevelScene(Scene):
         Handle the sale of the selected item if possible
         """
         self.menu_manager.close_active_menu()
-        sold, result_message = self.active_shop.sell(
-            self.selected_item
-        )
+        sold, result_message = self.active_shop.sell(self.selected_item)
         popup_title = str(self.selected_item)
         if sold:
             # Remove ref to item
@@ -1605,7 +1847,9 @@ class LevelScene(Scene):
             free_spaces: int = self.active_shop.current_visitor.nb_items_max - len(
                 self.active_shop.current_visitor.items
             )
-            items: list[Optional[Item]] = list(self.active_shop.current_visitor.items) + [None] * free_spaces
+            items: list[Optional[Item]] = (
+                list(self.active_shop.current_visitor.items) + [None] * free_spaces
+            )
             new_sell_menu = menu_creator_manager.create_inventory_menu(
                 self.interact_sell_item,
                 items,
@@ -1615,14 +1859,18 @@ class LevelScene(Scene):
             self.menu_manager.replace_given_menu(SHOP_MENU_ID, new_sell_menu)
         element_grid = [
             [
-                TextElement(result_message, font=fonts["ITEM_DESC_FONT"], margin=(20, 0, 20, 0))
+                TextElement(
+                    result_message, font=fonts["ITEM_DESC_FONT"], margin=(20, 0, 20, 0)
+                )
             ]
         ]
-        self.menu_manager.open_menu(InfoBox(
-            popup_title,
-            element_grid,
-            width=ITEM_INFO_MENU_WIDTH,
-        ))
+        self.menu_manager.open_menu(
+            InfoBox(
+                popup_title,
+                element_grid,
+                width=ITEM_INFO_MENU_WIDTH,
+            )
+        )
 
     def try_buy_selected_item(self) -> None:
         """
@@ -1631,15 +1879,19 @@ class LevelScene(Scene):
         result_message = self.active_shop.buy(self.selected_item)
         element_grid = [
             [
-                TextElement(result_message, font=fonts["ITEM_DESC_FONT"], margin=(20, 0, 20, 0))
+                TextElement(
+                    result_message, font=fonts["ITEM_DESC_FONT"], margin=(20, 0, 20, 0)
+                )
             ]
         ]
         self.menu_manager.replace_given_menu(SHOP_MENU_ID, self.active_shop.menu)
-        self.menu_manager.open_menu(InfoBox(
-            str(self.selected_item),
-            element_grid,
-            width=ITEM_INFO_MENU_WIDTH
-        ))
+        self.menu_manager.open_menu(
+            InfoBox(
+                str(self.selected_item),
+                element_grid,
+                width=ITEM_INFO_MENU_WIDTH,
+            )
+        )
 
     def unequip_selected_item(self) -> None:
         """
@@ -1648,10 +1900,10 @@ class LevelScene(Scene):
         self.menu_manager.close_active_menu()
         unequipped = self.selected_player.unequip(self.selected_item)
         result_message = (
-            "The item can't be unequipped : Not enough space in your inventory."
+            STR_THE_ITEM_CANNOT_BE_UNEQUIPPED_NOT_ENOUGH_SPACE_IN_UR_INVENTORY
         )
         if unequipped:
-            result_message = "The item has been unequipped"
+            result_message = STR_THE_ITEM_HAS_BEEN_UNEQUIPPED
 
             # Update equipment screen content
             new_equipment_menu = menu_creator_manager.create_equipment_menu(
@@ -1662,14 +1914,18 @@ class LevelScene(Scene):
             self.menu_manager.open_menu(new_equipment_menu)
         element_grid = [
             [
-                TextElement(result_message, font=fonts["ITEM_DESC_FONT"], margin=(20, 0, 20, 0))
+                TextElement(
+                    result_message, font=fonts["ITEM_DESC_FONT"], margin=(20, 0, 20, 0)
+                )
             ]
         ]
-        self.menu_manager.open_menu(InfoBox(
-            str(self.selected_item),
-            element_grid,
-            width=ITEM_INFO_MENU_WIDTH,
-        ))
+        self.menu_manager.open_menu(
+            InfoBox(
+                str(self.selected_item),
+                element_grid,
+                width=ITEM_INFO_MENU_WIDTH,
+            )
+        )
 
     def equip_selected_item(self) -> None:
         """
@@ -1680,18 +1936,26 @@ class LevelScene(Scene):
         return_equipped: int = self.selected_player.equip(self.selected_item)
         if return_equipped == -1:
             # Item can't be equipped by this player
-            result_message = f"This item can't be equipped: {self.selected_player} doesn't satisfy the requirements"
+            result_message = (
+                f_THIS_ITEM_CANNOT_BE_EQUIPPED_PLAYER_DOESNT_SATISFY_THE_REQUIREMENTS(
+                    self.selected_player
+                )
+            )
         else:
             # In this case returned value is > 0, item has been equipped
-            result_message = "The item has been equipped"
+            result_message = STR_THE_ITEM_HAS_BEEN_EQUIPPED
             if return_equipped == 1:
-                result_message += "Previous equipped item has been added to your inventory"
+                result_message += (
+                    STR_PREVIOUS_EQUIPPED_ITEM_HAS_BEEN_ADDED_TO_YOUR_INVENTORY
+                )
 
             # Inventory has changed
             self.refresh_inventory()
         element_grid = [
             [
-                TextElement(result_message, font=fonts["ITEM_DESC_FONT"], margin=(20, 0, 20, 0))
+                TextElement(
+                    result_message, font=fonts["ITEM_DESC_FONT"], margin=(20, 0, 20, 0)
+                )
             ]
         ]
         self.menu_manager.open_menu(
@@ -1714,9 +1978,7 @@ class LevelScene(Scene):
             self.menu_manager.close_active_menu()
             self.refresh_inventory()
         entries = [
-            [
-                TextElement(message, font=fonts["ITEM_DESC_FONT"], margin=(10, 0, 10, 0))
-            ]
+            [TextElement(message, font=fonts["ITEM_DESC_FONT"], margin=(10, 0, 10, 0))]
             for message in result_messages
         ]
         self.menu_manager.open_menu(
@@ -1734,7 +1996,9 @@ class LevelScene(Scene):
         free_spaces: int = self.selected_player.nb_items_max - len(
             self.selected_player.items
         )
-        items: list[Optional[Item]] = list(self.selected_player.items) + [None] * free_spaces
+        items: list[Optional[Item]] = (
+            list(self.selected_player.items) + [None] * free_spaces
+        )
         new_inventory_menu = menu_creator_manager.create_inventory_menu(
             self.interact_item, items, self.selected_player.gold
         )
@@ -1756,9 +2020,7 @@ class LevelScene(Scene):
         Keyword arguments:
         skill -- the concerned skill
         """
-        self.menu_manager.open_menu(
-            menu_creator_manager.create_skill_info_menu(skill)
-        )
+        self.menu_manager.open_menu(menu_creator_manager.create_skill_info_menu(skill))
 
     def open_alteration_description(self, alteration: Alteration) -> None:
         """
@@ -1780,9 +2042,9 @@ class LevelScene(Scene):
             self.new_turn()
             entities = self.players
         elif self.side_turn is EntityTurn.ALLIES:
-            entities = self.entities["allies"]
+            entities = self.entities.allies
         elif self.side_turn is EntityTurn.FOES:
-            entities = self.entities["foes"]
+            entities = self.entities.foes
 
         for entity in entities:
             entity.new_turn()
@@ -1793,9 +2055,7 @@ class LevelScene(Scene):
         """
         self.turn += 1
         self.animation = Animation(
-            [
-                Frame(constant_sprites["new_turn"], constant_sprites["new_turn_pos"])
-            ],
+            [Frame(constant_sprites["new_turn"], constant_sprites["new_turn_pos"])],
             60,
         )
 
@@ -1807,6 +2067,11 @@ class LevelScene(Scene):
         position -- the position of the mouse
         """
         if self.menu_manager.active_menu:
+            if (
+                not self.menu_manager.active_menu.is_position_inside(position)
+                and self.menu_manager.active_menu.identifier != CHARACTER_ACTION_MENU_ID
+            ):
+                self.menu_manager.close_active_menu()
             # TODO: check if the raw value could be replaced by a meaningful constant
             self.menu_manager.click(1, position)
             return
@@ -1842,8 +2107,8 @@ class LevelScene(Scene):
                             self.duel(
                                 self.selected_player,
                                 entity,
-                                self.players + self.entities["allies"],
-                                self.entities["foes"],
+                                self.players + self.entities.allies,
+                                self.entities.foes,
                                 self.selected_player.attack_kind,
                             )
                             # Turn is finished
@@ -1861,7 +2126,9 @@ class LevelScene(Scene):
             else:
                 # Initialization phase : player try to change the place of the selected character
                 for tile in self.player_possible_placements:
-                    if pygame.Rect(tile, (TILE_SIZE, TILE_SIZE)).collidepoint(position_inside_level):
+                    if pygame.Rect(tile, (TILE_SIZE, TILE_SIZE)).collidepoint(
+                        position_inside_level
+                    ):
                         # Test if a character is on the tile, in this case, characters are swapped
                         entity = self.get_entity_on_tile(tile)
                         if entity:
@@ -1873,13 +2140,15 @@ class LevelScene(Scene):
         for player in self.players:
             if player.is_on_position(position_inside_level):
                 if player.turn_is_finished():
-                    self.menu_manager.open_menu(menu_creator_manager.create_status_menu(
-                        {
-                            "info_alteration": self.open_alteration_description,
-                            "info_skill": self.open_skill_description,
-                        },
-                        player,
-                    ))
+                    self.menu_manager.open_menu(
+                        menu_creator_manager.create_status_menu(
+                            {
+                                "info_alteration": self.open_alteration_description,
+                                "info_skill": self.open_skill_description,
+                            },
+                            player,
+                        )
+                    )
                 else:
                     player.selected = True
                     self.selected_player = player
@@ -1895,31 +2164,35 @@ class LevelScene(Scene):
                         else {}
                     )
                 return
-        for entity in self.entities["foes"] + self.entities["allies"]:
+        for entity in self.entities.foes + self.entities.allies:
             if entity.is_on_position(position_inside_level):
-                self.menu_manager.open_menu(menu_creator_manager.create_status_entity_menu(
-                    {
-                        "info_alteration": self.open_alteration_description,
-                        "info_skill": self.open_skill_description
-                    },
-                    entity,
-                ))
+                self.menu_manager.open_menu(
+                    menu_creator_manager.create_status_entity_menu(
+                        {
+                            "info_alteration": self.open_alteration_description,
+                            "info_skill": self.open_skill_description,
+                        },
+                        entity,
+                    )
+                )
                 return
 
         is_initialization = self.game_phase is LevelStatus.INITIALIZATION
-        self.menu_manager.open_menu(menu_creator_manager.create_main_menu(
-            {
-                "save": self.open_save_menu,
-                "suspend": self.exit_game,
-                "start": self.start_game,
-                "diary": lambda: self.menu_manager.open_menu(
-                    menu_creator_manager.create_diary_menu(self.diary_entries),
-                ),
-                "end_turn": self.end_turn,
-            },
-            is_initialization,
-            position,
-        ))
+        self.menu_manager.open_menu(
+            menu_creator_manager.create_main_menu(
+                {
+                    "save": self.open_save_menu,
+                    "suspend": self.exit_game,
+                    "start": self.start_game,
+                    "diary": lambda: self.menu_manager.open_menu(
+                        menu_creator_manager.create_diary_menu(self.diary_entries_text_element_set),
+                    ),
+                    "end_turn": self.end_turn,
+                },
+                is_initialization,
+                position,
+            )
+        )
 
     def right_click(self) -> None:
         """
@@ -1933,11 +2206,11 @@ class LevelScene(Scene):
                 self.possible_moves = {}
             elif self.menu_manager.active_menu is not None:
                 # Test if player is on character's main menu, in this case,
-                # current move should be cancelled if possible*
-                # TODO: Find a better way to test if active menu is the character's main menu
-                if self.menu_manager.active_menu.title == "Select an action":
+                # current move should be cancelled if possible
+                if self.menu_manager.active_menu.identifier == CHARACTER_ACTION_MENU_ID:
                     if self.selected_player.cancel_move():
                         if self.traded_items:
+                            # Return traded items
                             for item in self.traded_items:
                                 if item[1] == self.selected_player:
                                     item[2].remove_item(item[0])
@@ -1946,6 +2219,16 @@ class LevelScene(Scene):
                                     self.selected_player.remove_item(item[0])
                                     item[1].set_item(item[0])
                             self.traded_items.clear()
+                        if self.traded_gold:
+                            # Return traded gold
+                            for gold in self.traded_gold:
+                                if gold[1] == self.selected_player:
+                                    self.selected_player.gold += gold[0]
+                                    gold[2].gold -= gold[0]
+                                else:
+                                    self.selected_player.gold -= gold[0]
+                                    gold[2].gold += gold[0]
+                            self.traded_gold.clear()
                         self.selected_player.selected = False
                         self.selected_player = None
                         self.possible_moves = {}
@@ -1966,7 +2249,7 @@ class LevelScene(Scene):
             self.possible_moves = {}
             self.possible_attacks = []
 
-    def click(self, button: int, position: Position) -> None:
+    def click(self, button: int, position: Position) -> QuitActionKind:
         """
         Handle the triggering of a click event.
 
@@ -1975,14 +2258,21 @@ class LevelScene(Scene):
         (1 for left button, 2 for middle button, 3 for right button)
         position -- the position of the mouse
         """
-        # No event if there is an animation or it is not player turn
+        # No event if there is an animation or if it is not player turn
         if self.animation:
-            return
+            return QuitActionKind.CONTINUE
 
         if button == 1:
             self.left_click(position)
         elif button == 3:
             self.right_click()
+
+        if self.game_phase == LevelStatus.VERY_BEGINNING:
+            # Update game phase if dialogs at the very beginning are all closed
+            if not self.menu_manager.active_menu:
+                self.game_phase = LevelStatus.INITIALIZATION
+
+        return QuitActionKind.CONTINUE
 
     def button_down(self, button: int, position: Position) -> None:
         """
@@ -2019,6 +2309,20 @@ class LevelScene(Scene):
                                 )
                             return
 
+    def key_down(self, keyname):
+        """
+        Handle the triggering of a key down event.
+
+        Keyword arguments:
+        keyname -- an integer value representing which key button is down
+        """
+        if keyname == pygame.K_ESCAPE:
+            if (
+                self.menu_manager.active_menu is not None
+                and self.menu_manager.active_menu.identifier != CHARACTER_ACTION_MENU_ID
+            ):
+                self.menu_manager.close_active_menu()
+
     def motion(self, position: Position) -> None:
         """
         Handle the triggering of a motion event.
@@ -2040,16 +2344,19 @@ class LevelScene(Scene):
     def _compute_active_screen_part(self) -> pygame.Surface:
         """
         Compute the part of the screen containing the level itself,
-        i.e. the part where the map, the player interface and every entities are.
+        i.e. the part where the map, the player interface and every entity are.
 
         Return the computed sub-screen part.
         """
         level_width: int = min(self.screen.get_width(), WIN_WIDTH)
         level_height: int = min(self.screen.get_height(), WIN_HEIGHT)
         return self.screen.subsurface(
-            pygame.Rect(self.screen.get_width() // 2 - level_width // 2,
-                        self.screen.get_height() // 2 - level_height // 2,
-                        level_width, level_height)
+            pygame.Rect(
+                self.screen.get_width() // 2 - level_width // 2,
+                self.screen.get_height() // 2 - level_height // 2,
+                level_width,
+                level_height,
+            )
         )
 
     def _compute_relative_position(self, position: Position) -> Position:
@@ -2058,5 +2365,7 @@ class LevelScene(Scene):
         Keyword arguments:
         position -- the absolute position to be converted
         """
-        return position - pygame.Vector2(self.screen.get_width() // 2 - self.active_screen_part.get_width() // 2,
-                                         self.screen.get_height() // 2 - self.active_screen_part.get_height() // 2)
+        return position - pygame.Vector2(
+            self.screen.get_width() // 2 - self.active_screen_part.get_width() // 2,
+            self.screen.get_height() // 2 - self.active_screen_part.get_height() // 2,
+        )

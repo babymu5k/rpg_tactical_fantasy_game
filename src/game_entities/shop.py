@@ -6,17 +6,18 @@ from __future__ import annotations
 
 import os
 from copy import copy
-from typing import List, Optional
+from typing import Optional
 
 import pygame.mixer
 from lxml import etree
-from pygamepopup.components import BoxElement, Button, InfoBox, TextElement
+from pygamepopup.components import BoxElement, Button, TextElement, InfoBox
 
 from src.game_entities.building import Building
 from src.game_entities.character import Character
 from src.game_entities.item import Item
 from src.gui.fonts import fonts
 from src.gui.position import Position
+from src.services.language import *
 from src.services import menu_creator_manager
 
 
@@ -27,11 +28,14 @@ class Shop(Building):
     Keyword arguments:
     name -- the name of the shop
     position -- the current position of the shop on screen
-    sprite -- the relative path to the visual representation of the shop
-    interaction -- the interaction that should be triggered when a character player try to interact with the shop
+    sprite_link -- the relative path to the visual representation of the shop
     stock -- the data structure containing all the available items to be bought with their associated quantity
+    interaction -- the interaction that should be triggered when a character player try to interact with the shop
+    sprite -- the pygame Surface corresponding to the appearance of the shop on screen,
+    would be loaded from sprite_link if not provided
 
     Attributes:
+    current_visitor -- the reference to the current character visiting the shop
     stock -- the data structure containing all the available items to be bought with their associated quantity
     menu -- the shop menu displaying all the items that could be bought
     gold_sfx -- the sound that should be started when an item is sold or bought
@@ -45,13 +49,13 @@ class Shop(Building):
         self,
         name: str,
         position: Position,
-        sprite: str,
-        interaction: dict[str, any],
+        sprite_link: str,
         stock: list[dict[str, any]],
+        interaction: Optional[dict[str, any]] = None,
+        sprite: Optional[pygame.Surface] = None,
     ) -> None:
-        super().__init__(name, position, sprite, interaction)
+        super().__init__(name, position, sprite_link, interaction, sprite)
         self.current_visitor: Optional[Character] = None
-        self.stock: List[dict[str, any]] = stock
         self.stock: list[dict[str, any]] = stock
         self.interaction: dict[str, any] = interaction
         self.menu: InfoBox = menu_creator_manager.create_shop_menu(
@@ -98,20 +102,14 @@ class Shop(Building):
         self.update_shop_menu(self.current_visitor.gold)
 
         grid_element: list[list[BoxElement]] = [
-            [
-                Button(title="Buy", callback=Shop.buy_interface_callback)
-            ],
-            [
-                Button(title="Sell", callback=Shop.sell_interface_callback)
-            ],
+            [Button(title=STR_BUY, callback=Shop.buy_interface_callback)],
+            [Button(title=STR_SELL, callback=Shop.sell_interface_callback)],
         ]
 
         if self.interaction:
             for talk in self.interaction["talks"]:
                 pygame.mixer.Sound.play(self.talk_sfx)
-                grid_element.append(
-                    [TextElement(talk, font=fonts["ITEM_DESC_FONT"])]
-                )
+                grid_element.append([TextElement(talk, font=fonts["ITEM_DESC_FONT"])])
 
         return grid_element
 
@@ -141,9 +139,9 @@ class Shop(Building):
                 # Gold total amount and stock have been decreased: the screen should be updated
                 self.update_shop_menu(self.current_visitor.gold)
 
-                return "The item has been bought."
-            return "Not enough space in inventory to buy this item."
-        return "Not enough gold to buy this item."
+                return STR_THE_ITEM_HAS_BEEN_BOUGHT
+            return STR_NOT_ENOUGH_SPACE_IN_INVENTORY_TO_BUY_THIS_ITEM
+        return STR_NOT_ENOUGH_GOLD_TO_BY_THIS_ITEM
 
     def sell(self, item: Item) -> tuple[bool, str]:
         """
@@ -162,8 +160,8 @@ class Shop(Building):
             # Update shop screen content (gold total amount has been augmented)
             self.update_shop_menu(self.current_visitor.gold)
 
-            return True, "The item has been sold."
-        return False, "This item can't be sold !"
+            return True, STR_THE_ITEM_HAS_BEEN_SOLD
+        return False, STR_THIS_ITEM_CANT_BE_SOLD
 
     def save(self, tree_name: str) -> etree.Element:
         """

@@ -1,6 +1,7 @@
 __pycache__/
 build/
 *.zip
+*.whl
 saves/*.xml
 .coverage
 .coverage.*
@@ -8,6 +9,9 @@ saves/*.xml
 
 # For those who use PyCharm
 .idea/
+
+# For those who use vscode
+.vscode/
 
 # Environments
 .env

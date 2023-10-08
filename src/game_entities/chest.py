@@ -31,6 +31,8 @@ class Chest(Entity):
     sprite_close -- the relative path to the visual representation of the chest when closed
     sprite_open -- the relative path to the visual representation of the chest when opened
     potential_items -- the items that could be found in the chest
+    sprite -- the pygame Surface corresponding to the appearance of the chest on screen,
+    would be loaded from sprite_close if not provided
 
     Attributes:
     sprite_close_link -- the relative path to the visual representation of the chest when closed
@@ -50,8 +52,9 @@ class Chest(Entity):
         sprite_close: str,
         sprite_open: str,
         potential_items: Sequence[tuple[Item, float]],
+        sprite: Optional[pygame.Surface] = None,
     ) -> None:
-        super().__init__("Chest", position, sprite_close)
+        super().__init__("Chest", position, sprite if sprite else sprite_close)
         self.sprite_close_link: str = sprite_close
         self.sprite_open_link: str = sprite_open
         self.sprite_open: pygame.Surface = pygame.transform.scale(
@@ -77,7 +80,7 @@ class Chest(Entity):
         """
         bag: list[Item] = []
         # probability : between 0.1 and 1
-        for (item, probability) in potential_items:
+        for item, probability in potential_items:
             times = int(probability * 100)
             bag += [item] * times
 

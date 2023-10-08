@@ -50,7 +50,7 @@ class TestLevel(unittest.TestCase):
         self.import_save_file("tests/test_saves/simple_save.xml")
 
         players = self.level.players
-        foe = self.level.entities["foes"][0]
+        foe = self.level.entities.foes[0]
         entities_with_dist = self.level.distance_between_all(foe, players)
 
         self.assertEqual(5, entities_with_dist[players[0]])
@@ -60,40 +60,40 @@ class TestLevel(unittest.TestCase):
         self.import_save_file("tests/test_saves/complete_first_level_save.xml")
 
         players = self.level.players
-        foes = self.level.entities["foes"]
+        foes = self.level.entities.foes
 
         raimund = None
         braern = None
         thokdrum = None
         for player in players:
-            pos = (player.position[0] // TILE_SIZE, player.position[1] // TILE_SIZE)
-            if pos == (17, 10):
+            if player.name == "raimund":
                 raimund = player
-            elif pos == (16, 9):
+            elif player.name == "braern":
                 braern = player
-            elif pos == (16, 10):
+            elif player.name == "thokdrum":
                 thokdrum = player
 
         specific_skeleton = None
         specific_necrophage = None
-        for f in foes:
-            pos = (f.position[0] // TILE_SIZE, f.position[1] // TILE_SIZE)
-            if pos == (12, 8):
-                specific_skeleton = f
-            if pos == (13, 5):
-                specific_necrophage = f
+        for foe in foes:
+            position = (foe.position[0] // TILE_SIZE, foe.position[1] // TILE_SIZE)
+            if position == (16, 6):
+                specific_skeleton = foe
+            if position == (9, 7):
+                specific_necrophage = foe
 
-        entities_with_dist = self.level.distance_between_all(specific_skeleton, players)
-        self.assertEqual(12, entities_with_dist[raimund])
-        self.assertEqual(4, entities_with_dist[braern])
-        self.assertEqual(5, entities_with_dist[thokdrum])
+        entities_distance_to_skeleton = self.level.distance_between_all(
+            specific_skeleton, players
+        )
+        self.assertEqual(5, entities_distance_to_skeleton[raimund])
+        self.assertEqual(6, entities_distance_to_skeleton[braern])
+        self.assertEqual(2, entities_distance_to_skeleton[thokdrum])
 
-        entities_with_dist = self.level.distance_between_all(
+        entities_distance_to_necrophage = self.level.distance_between_all(
             specific_necrophage, players
         )
-        self.assertEqual(8, entities_with_dist[raimund])
-        self.assertEqual(6, entities_with_dist[braern])
-        self.assertEqual(7, entities_with_dist[thokdrum])
+        self.assertEqual(7, entities_distance_to_necrophage[raimund])
+        self.assertEqual(8, entities_distance_to_necrophage[braern])
 
     def test_cancel_movement_after_trade_item_sent(self):
         # Import complete save file
@@ -108,14 +108,16 @@ class TestLevel(unittest.TestCase):
         item = rd.choice(active_player.items)
 
         # Open character menu
-        self.level.menu_manager.open_menu(menu_creator_manager.create_player_menu(
-            {"inventory": None, "equipment": None, "status": None, "wait": None},
-            active_player,
-            [],
-            [],
-            [],
-            [],
-        ))
+        self.level.menu_manager.open_menu(
+            menu_creator_manager.create_player_menu(
+                {"inventory": None, "equipment": None, "status": None, "wait": None},
+                active_player,
+                [],
+                [],
+                [],
+                [],
+            )
+        )
 
         # Make trade (send item from active player to receiver player)
         self.simulate_trade_item(item, active_player, receiver_player, True)
@@ -142,14 +144,16 @@ class TestLevel(unittest.TestCase):
         item = rd.choice(sender_player.items)
 
         # Open character menu
-        self.level.menu_manager.open_menu(menu_creator_manager.create_player_menu(
-            {"inventory": None, "equipment": None, "status": None, "wait": None},
-            active_player,
-            [],
-            [],
-            [],
-            [],
-        ))
+        self.level.menu_manager.open_menu(
+            menu_creator_manager.create_player_menu(
+                {"inventory": None, "equipment": None, "status": None, "wait": None},
+                active_player,
+                [],
+                [],
+                [],
+                [],
+            )
+        )
 
         # Make trade (send item from active player to receiver player)
         self.simulate_trade_item(item, active_player, sender_player, False)
@@ -179,14 +183,16 @@ class TestLevel(unittest.TestCase):
         second_item = rd.choice(active_player.items)
 
         # Open character menu
-        self.level.menu_manager.open_menu(menu_creator_manager.create_player_menu(
-            {"inventory": None, "equipment": None, "status": None, "wait": None},
-            active_player,
-            [],
-            [],
-            [],
-            [],
-        ))
+        self.level.menu_manager.open_menu(
+            menu_creator_manager.create_player_menu(
+                {"inventory": None, "equipment": None, "status": None, "wait": None},
+                active_player,
+                [],
+                [],
+                [],
+                [],
+            )
+        )
 
         # Make trade in both way
         self.simulate_trade_item(item, active_player, trade_partner_player, False)
@@ -205,7 +211,9 @@ class TestLevel(unittest.TestCase):
         self.assertTrue(second_item in active_player.items)
         self.assertFalse(second_item in trade_partner_player.items)
 
-    def test_cancel_movement_after_trade_done_during_previous_turn_does_not_cancel_trade(self):
+    def test_cancel_movement_after_trade_done_during_previous_turn_does_not_cancel_trade(
+        self,
+    ):
         # Import complete save file
         self.import_save_file("tests/test_saves/complete_first_level_save.xml")
 
@@ -221,14 +229,16 @@ class TestLevel(unittest.TestCase):
         second_item = rd.choice(active_player.items)
 
         # Open character menu
-        self.level.menu_manager.open_menu(menu_creator_manager.create_player_menu(
-            {"inventory": None, "equipment": None, "status": None, "wait": None},
-            active_player,
-            [],
-            [],
-            [],
-            [],
-        ))
+        self.level.menu_manager.open_menu(
+            menu_creator_manager.create_player_menu(
+                {"inventory": None, "equipment": None, "status": None, "wait": None},
+                active_player,
+                [],
+                [],
+                [],
+                [],
+            )
+        )
 
         # Make trade in both way
         self.simulate_trade_item(item, active_player, trade_partner_player, False)
@@ -245,14 +255,16 @@ class TestLevel(unittest.TestCase):
 
         # Select and cancel player turn
         self.level.selected_player = active_player
-        self.level.menu_manager.open_menu(menu_creator_manager.create_player_menu(
-            {"inventory": None, "equipment": None, "status": None, "wait": None},
-            active_player,
-            [],
-            [],
-            [],
-            [],
-        ))
+        self.level.menu_manager.open_menu(
+            menu_creator_manager.create_player_menu(
+                {"inventory": None, "equipment": None, "status": None, "wait": None},
+                active_player,
+                [],
+                [],
+                [],
+                [],
+            )
+        )
         self.level.right_click()
 
         self.assertTrue(item in active_player.items)
@@ -275,8 +287,12 @@ class TestLevel(unittest.TestCase):
     def test_throw_selected_item(self):
         self.import_save_file("tests/test_saves/simple_save.xml")
 
-        raimund_player = [player for player in self.level.players if player.name == "raimund"][0]
-        item_to_be_thrown = [item for item in raimund_player.items if item.name == "life_potion"][0]
+        raimund_player = [
+            player for player in self.level.players if player.name == "raimund"
+        ][0]
+        item_to_be_thrown = [
+            item for item in raimund_player.items if item.name == "life_potion"
+        ][0]
         other_item = [item for item in raimund_player.items if item.name == "key"][0]
 
         self.level.selected_player = raimund_player
@@ -291,9 +307,15 @@ class TestLevel(unittest.TestCase):
     def test_throw_selected_equipped_item(self):
         self.import_save_file("tests/test_saves/simple_save.xml")
 
-        raimund_player = [player for player in self.level.players if player.name == "raimund"][0]
-        equipment_to_be_thrown = [item for item in raimund_player.equipments if item.name == "basic_bow"][0]
-        other_equipment = [item for item in raimund_player.equipments if item.name == "brown_boots"][0]
+        raimund_player = [
+            player for player in self.level.players if player.name == "raimund"
+        ][0]
+        equipment_to_be_thrown = [
+            item for item in raimund_player.equipments if item.name == "basic_bow"
+        ][0]
+        other_equipment = [
+            item for item in raimund_player.equipments if item.name == "brown_boots"
+        ][0]
         inventory_before = raimund_player.items.copy()
 
         self.level.selected_player = raimund_player
@@ -309,10 +331,14 @@ class TestLevel(unittest.TestCase):
     def test_throw_selected_equipment_but_not_the_equipped_one(self):
         self.import_save_file("tests/test_saves/simple_save.xml")
 
-        raimund_player = [player for player in self.level.players if player.name == "raimund"][0]
+        raimund_player = [
+            player for player in self.level.players if player.name == "raimund"
+        ][0]
         equipment_to_be_thrown_from_inventory = parse_item_file("basic_bow")
         raimund_player.set_item(equipment_to_be_thrown_from_inventory)
-        equipped_version_of_the_item = [item for item in raimund_player.equipments if item.name == "brown_boots"][0]
+        equipped_version_of_the_item = [
+            item for item in raimund_player.equipments if item.name == "brown_boots"
+        ][0]
         equipment_before = raimund_player.equipments.copy()
 
         self.level.selected_player = raimund_player
